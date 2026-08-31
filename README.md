@@ -1,13 +1,13 @@
 # Expector - verify, remediate, report.
 
-Modular Ansible expected-state checker :
+Modular expected-state checker based on Ansible:
 1. Reads a YAML checklist
 2. Compares actual host state to what you declared
 3. Optionally remediates failures
 4. Generates HTML and JSON reports
 5. Send email with full reports and/or errors-only
 
-Users can add their own checks (See [Add a check type](#-Add-a-check-type) section below) and their own notification systems (See [Add a notification type](###-Add-a-notification-type) ). 
+Users can add their own checks (See [Add a check type](#add-a-check-type)) and their own notification systems (See [Add a notification type](#add-a-notification-type) ). 
 
 Available checks are :
 
