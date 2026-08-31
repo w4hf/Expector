@@ -1,0 +1,84 @@
+---
+# Delete timestamped report archives older than expector_report_keep runs.
+# Stable latest files (<prefix>.html / .json, <prefix>-errors.html) are never
+# removed. The run that just finished is always kept.
+#
+# expector_report_keep:
+#   N (int)  — keep the N most recent runs (default 10; values below 1 count as 1)
+#   all / -1 — do not prune
+
+- name: Resolve report history limit
+  ansible.builtin.set_fact:
+    _report_keep_n: "{{ [_keep_raw | int, 1] | max }}"
+    _report_keep_unlimited: "{{ (_keep_raw | string | lower) in ['all', 'unlimited', '-1'] }}"
+    _report_html_prefix: "{{ _html if (_html | length > 0) else 'expector' }}"
+    _report_json_prefix: "{{ _json if (_json | length > 0) else (_html if (_html | length > 0) else 'expector') }}"
+  vars:
+    _keep_raw: "{{ expector_report_keep | default(10) }}"
+    _html: "{{ '' if (expector_report_file_prefix is not defined or expector_report_file_prefix is none) else (expector_report_file_prefix | string | trim) }}"
+    _json: "{{ '' if (expector_json_file_prefix is not defined or expector_json_file_prefix is none) else (expector_json_file_prefix | string | trim) }}"
+
+- name: Skip report pruning when history is unlimited
+  when: _report_keep_unlimited | bool
+  ansible.builtin.debug:
+    msg: "Report history pruning skipped (expector_report_keep={{ expector_report_keep }})"
+
+- name: Prune old timestamped reports
+  when: not (_report_keep_unlimited | bool)
+  block:
+    - name: Find timestamped report archives
+      ansible.builtin.find:
+        paths: "{{ expector_report_dir }}"
+        file_type: file
+        recurse: false
+        use_regex: false
+        patterns:
+          - "{{ _report_html_prefix }}-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].html"
+          - "{{ _report_json_prefix }}-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].json"
+          - "{{ _report_html_prefix }}-errors-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].html"
+      register: _report_archives
+
+    - name: Collect archive paths and run stamps
+      ansible.builtin.set_fact:
+        _report_archive_paths: "{{ _report_archives.files | default([]) | map(attribute='path') | list }}"
+        _report_stamps: "{{ _stamps }}"
+      vars:
+        _stamps: "{{ _report_archives.files | default([]) | map(attribute='path') | map('basename') | map('regex_search', '[0-9]{8}-[0-9]{6}') | select('regex', '^[0-9]{8}-[0-9]{6}$') | unique | list | sort(reverse=True) }}"
+
+    - name: Select archives beyond the history limit
+      ansible.builtin.set_fact:
+        _report_prune_paths: "{{ _paths | from_yaml }}"
+      vars:
+        _keep: "{{ (_report_stamps | default([]))[:(_report_keep_n | int)] }}"
+        _paths: >-
+          {%- set ns = namespace(old=[]) -%}
+          {%- for p in (_report_archive_paths | default([])) -%}
+            {%- set stamp = p | basename | regex_search('[0-9]{8}-[0-9]{6}') -%}
+            {%- if stamp | default('') | length > 0 and stamp not in _keep -%}
+              {%- set ns.old = ns.old + [p] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.old | to_yaml }}
+
+    - name: Delete old report archives
+      when: (_report_prune_paths | default([]) | length) > 0
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ _report_prune_paths }}"
+      loop_control:
+        label: "{{ item | basename }}"
+
+    - name: Display report pruning result
+      ansible.builtin.debug:
+        msg: "{{ _prune_msg }}"
+      vars:
+        _deleted: "{{ _report_prune_paths | default([]) | length }}"
+        _kept: "{{ _report_stamps | default([]) | length }}"
+        _prune_msg: >-
+          {{
+            'Report history: kept last ' ~ (_report_keep_n | string) ~ ' run(s), deleted '
+            ~ (_deleted | string) ~ ' old file(s)'
+            if (_deleted | int) > 0
+            else 'Report history: kept last ' ~ (_report_keep_n | string) ~ ' run(s), nothing to delete'
+          }}

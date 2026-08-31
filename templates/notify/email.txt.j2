@@ -1,0 +1,57 @@
+Expector
+{{ check_summary.hosts_checked | default(0) }} hosts · {{ check_summary.checks_total | default(0) }} checks · {{ check_summary.checks_passed | default(0) }} passed · {{ check_summary.checks_failed | default(0) }} failed{% if (check_summary.hosts_unreachable | default(0) | int) > 0 %} · {{ check_summary.hosts_unreachable }} unreachable{% endif %}
+
+{% if (_notify_events | default([])) | length == 0 %}
+All checks passed.
+{% else %}
+{% for ev in _notify_events %}
+{% set host = ev.host %}
+{% set c = ev.check %}
+{% set failed_items = c.details | default([]) | selectattr('result', 'equalto', 'fail') | list %}
+{% set _failure_msg = (c.check_msg | default('Check failed')) if (failed_items | length > 0) else (c.check_error | default('') if (c.check_error | default('') | length > 0) else c.check_msg | default('Check failed')) %}
+{{ host }}{% if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %} [UNREACHABLE]{% endif %}
+{% if c.check_name | default('') | length > 0 %}{{ c.check_name }}{% if c.check_type | default('') | length > 0 %} [{{ c.check_type }}]{% endif %}
+{% endif %}
+{{ _failure_msg }}
+{% for d in failed_items %}
+{% if d.mismatches is defined and d.mismatches is sequence and d.mismatches is not string and (d.mismatches | length > 0) %}
+{% for m in d.mismatches %}
+{% if (m.kind | default('body')) == 'body' %}
+  {{ m.key | default('body') }} ({{ m.url | default(d.url | default('')) }}): expected {{ m.expected }} / actual {{ m.actual }}
+{% elif (m.kind | default('')) == 'status' %}
+  {{ m.url | default(d.url | default('')) }} status: expected {{ m.expected }} / actual {{ m.actual }}
+{% else %}
+  {{ m.url | default(d.url | default('')) }}: expected {{ m.expected }} / actual {{ m.actual }}
+{% endif %}
+{% endfor %}
+{% else %}
+{% set label = d.name | default(d.command | default(d.url | default('item'))) %}
+{% if d.expected_state is defined %}
+  {{ label }}: expected {{ d.expected_state }} / actual {{ d.actual_state | default('—') }}
+{% endif %}
+{% if d.expected_enabled is defined and (d.expected_enabled | string) not in ['not-checked', ''] %}
+  {{ label }} enabled: expected {{ d.expected_enabled }} / actual {{ d.actual_enabled | default('—') }}
+{% endif %}
+{% if d.expected_rc is defined and (d.expected_rc | string) != (d.actual_rc | default('') | string) %}
+  {{ label }}: expected rc {{ d.expected_rc }} / actual rc {{ d.actual_rc | default('—') }}
+{% endif %}
+{% if d.expected_regex is defined and (d.expected_regex | string | length > 0) %}
+  {{ label }} output: expected {{ d.expected_regex }} / actual {{ (d.stdout | default(d.stderr | default('—')) | trim)[:80] }}
+{% endif %}
+{% if d.expected_status is defined and (d.expected_status | string) != (d.actual_status | default('') | string) %}
+  {{ label }}: expected {{ d.expected_status }} / actual {{ d.actual_status | default('—') }}
+{% endif %}
+{% if d.expected_status is defined and d.error | default('') | length > 0 and (d.expected_status | string) == (d.actual_status | default('') | string) %}
+  {{ label }} body: {{ d.error }}
+{% endif %}
+{% if d.expected_state is not defined and d.expected_rc is not defined and d.expected_status is not defined and d.error | default('') | length > 0 %}
+  {{ label }}: {{ d.error }}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% set rem_attempted = c.remediate_attempted | default(false) | bool %}
+{% set rem_ok = rem_attempted and (c.remediate_success | default(false) | bool) %}
+  Remediation: {{ 'SUCCEEDED' if rem_ok else ('FAILED' if rem_attempted else 'not attempted') }}{% if rem_attempted and (c.remediate_msg | default('') | length > 0) %} — {{ c.remediate_msg }}{% endif %}{% if rem_attempted and (c.remediate_error | default('') | length > 0) %} — {{ c.remediate_error }}{% endif %}
+
+{% endfor %}
+{% endif %}

@@ -1,0 +1,40 @@
+---
+# Score looped ansible.builtin.shell results against expected_rc / expected_regex.
+# Each result.item must carry: command, expected_rc, expected_regex, remediation_command.
+#
+# Input:  _cmd_eval_results (list)
+# Output: _cmd_eval_details (list of per-command result dicts)
+
+- name: Command | Evaluate | Reset details
+  ansible.builtin.set_fact:
+    _cmd_eval_details: []
+
+- name: Command | Evaluate | Score each result
+  ansible.builtin.set_fact:
+    _cmd_eval_details: "{{ _cmd_eval_details + [_cmd_result] }}"
+  loop: "{{ _cmd_eval_results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.command | default('command') }}"
+  vars:
+    _expected_rc: "{{ item.item.expected_rc | default(0) | int }}"
+    _actual_rc: "{{ item.rc | default(item.failed | ternary(-1, 0)) | int }}"
+    _output: "{{ ((item.stdout | default('')) ~ '\n' ~ (item.stderr | default(''))) | trim }}"
+    _rc_ok: "{{ _actual_rc | int == _expected_rc | int }}"
+    _regex_defined: "{{ item.item.expected_regex is defined and (item.item.expected_regex | string | length > 0) }}"
+    _regex_ok: "{{ (not (_regex_defined | bool)) or (_output is regex(item.item.expected_regex | string)) }}"
+    _ok: "{{ (_rc_ok | bool) and (_regex_ok | bool) }}"
+    _error: "{{ _error_parts | reject('eq', '') | list | join('; ') }}"
+    _error_parts:
+      - "{{ '' if (_rc_ok | bool) else ('rc=' ~ (_actual_rc | string) ~ ' (expected ' ~ (_expected_rc | string) ~ ')') }}"
+      - "{{ '' if (_regex_ok | bool) else ('output did not match regex: ' ~ (item.item.expected_regex | string)) }}"
+      - "{{ item.msg | default('') if (item.failed | default(false) | bool) else '' }}"
+    _cmd_result:
+      command: "{{ item.item.command }}"
+      expected_rc: "{{ _expected_rc | int }}"
+      actual_rc: "{{ _actual_rc | int }}"
+      expected_regex: "{{ item.item.expected_regex | default('') }}"
+      stdout: "{{ item.stdout | default('') }}"
+      stderr: "{{ item.stderr | default('') }}"
+      remediation_command: "{{ item.item.remediation_command | default(current_check.remediation_command | default('')) }}"
+      result: "{{ 'pass' if (_ok | bool) else 'fail' }}"
+      error: "{{ '' if (_ok | bool) else ((item.item.command ~ ': ' ~ _error) if _error | length > 0 else (item.item.command ~ ': command failed')) }}"

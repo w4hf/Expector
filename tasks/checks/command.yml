@@ -1,0 +1,131 @@
+---
+# check type: command
+# Spec: commands[] with command, expected_rc, expected_regex (optional),
+#       remediation_command (optional)
+# Remediate: run remediation_command, then re-run the original command and
+#   score it with the same expected_rc / expected_regex as Verify.
+
+- name: Command | Verify
+  block:
+    - name: Command | Verify | Normalize command list
+      ansible.builtin.set_fact:
+        _command_items: "{{ current_check.commands if current_check.commands is defined else ([current_check] if current_check.command is defined else []) }}"
+
+    - name: Command | Verify | Require commands
+      when: _command_items | length == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default('command') }}' is missing required field 'commands'"
+        check_error: "Required field 'commands' (or 'command') is missing or empty"
+
+    - name: Command | Verify | Run listed commands
+      when: not (_spec_invalid | bool)
+      ansible.builtin.shell:
+        cmd: "{{ item.command }}"
+      loop: "{{ _command_items }}"
+      loop_control:
+        label: "{{ item.command }}"
+      register: _cmd_results
+      failed_when: false
+      changed_when: false
+      become: "{{ current_check.become | default(true) }}"
+
+    - name: Command | Verify | Evaluate each command result
+      when: not (_spec_invalid | bool)
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/checks/_command_evaluate.yml"
+      vars:
+        _cmd_eval_results: "{{ _cmd_results.results | default([]) }}"
+
+    - name: Command | Verify | Store scored results
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _check_details: "{{ _cmd_eval_details | default([]) }}"
+
+    - name: Command | Verify | Set check status
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        check_success: "{{ _cmd_failures | length == 0 }}"
+        check_msg: "{{ 'All ' ~ (_check_details | length | string) ~ ' commands matched expected rc/output' if (_cmd_failures | length == 0) else ((_cmd_failures | length | string) ~ ' of ' ~ (_check_details | length | string) ~ ' commands failed') }}"
+        check_error: "{{ _cmd_failures | map(attribute='error') | reject('eq', '') | list | join('; ') }}"
+      vars:
+        _cmd_failures: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+
+  rescue:
+    - name: Command | Verify | Capture unexpected error
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "Command verification raised an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Command | Remediate
+  when:
+    - _do_remediate | bool
+    - not (check_success | bool)
+    - not (_spec_invalid | bool)
+  block:
+    - name: Command | Remediate | Select failed commands that have a fix
+      ansible.builtin.set_fact:
+        _failed_with_fix: "{{ _check_details | selectattr('result', 'equalto', 'fail') | rejectattr('remediation_command', 'equalto', '') | list }}"
+
+    - name: Command | Remediate | Skip when no remediation command is defined
+      when: _failed_with_fix | length == 0
+      ansible.builtin.set_fact:
+        _remediate_attempted: false
+        _remediate_success: false
+        _remediate_msg: "Remediation requested but no remediation_command is defined"
+        _remediate_error: ""
+
+    - name: Command | Remediate | Run remediation commands
+      when: _failed_with_fix | length > 0
+      ansible.builtin.shell:
+        cmd: "{{ item.remediation_command }}"
+      loop: "{{ _failed_with_fix }}"
+      loop_control:
+        label: "{{ item.remediation_command }}"
+      register: _cmd_fix
+      failed_when: false
+      become: "{{ current_check.become | default(true) }}"
+
+    - name: Command | Remediate | Re-run originally failed commands
+      when: _failed_with_fix | length > 0
+      ansible.builtin.shell:
+        cmd: "{{ item.command }}"
+      loop: "{{ _failed_with_fix }}"
+      loop_control:
+        label: "{{ item.command }}"
+      register: _cmd_recheck
+      failed_when: false
+      changed_when: false
+      become: "{{ current_check.become | default(true) }}"
+
+    - name: Command | Remediate | Re-evaluate original check criteria
+      when: _failed_with_fix | length > 0
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/checks/_command_evaluate.yml"
+      vars:
+        _cmd_eval_results: "{{ _cmd_recheck.results | default([]) }}"
+
+    - name: Command | Remediate | Record remediation result
+      when: _failed_with_fix | length > 0
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: "{{ (_fix_failures | length == 0) and (_still_failed | length == 0) }}"
+        _remediate_msg: "{{ 'Remediation commands succeeded and re-checks passed' if (_fix_failures | length == 0 and _still_failed | length == 0) else 'Remediation did not bring all commands to the expected result' }}"
+        _remediate_error: "{{ (_fix_failures + _still_failed) | join('; ') }}"
+      vars:
+        _fix_failures: "{{ _cmd_fix.results | default([]) | rejectattr('rc', 'equalto', 0) | map(attribute='stderr') | reject('eq', '') | list }}"
+        _still_failed: "{{ (_cmd_eval_details | default([])) | selectattr('result', 'equalto', 'fail') | map(attribute='error') | reject('eq', '') | list }}"
+
+  rescue:
+    - name: Command | Remediate | Capture unexpected error
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: false
+        _remediate_msg: "Command remediation raised an unexpected error"
+        _remediate_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Command | Report
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/checks/_report.yml"

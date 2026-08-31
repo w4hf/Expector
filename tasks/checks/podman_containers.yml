@@ -1,0 +1,226 @@
+---
+# check type: podman_containers
+# Spec: containers[], expected_state (running | stopped | present | absent)
+# Optional: podman_user (run podman as that user), become (default false —
+#   AAP containerized installs use rootless podman for the connecting user)
+# Lists names with:
+#   podman ps -a --format '{{.Names}}'
+#   podman ps --format '{{.Names}}'
+# Remediate: start when expected_state is running, stop when stopped.
+
+- name: Podman containers | Initialize
+  ansible.builtin.set_fact:
+    _podman_become: "{{ current_check.become | default(_podman_user | length > 0) | bool }}"
+    _podman_env: {}
+  vars:
+    _podman_user: "{{ current_check.podman_user | default('') | string | trim }}"
+
+- name: Podman containers | Verify
+  block:
+    - name: Podman containers | Verify | Require a containers list
+      when: current_check.containers is not defined or current_check.containers | length == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default('podman_containers') }}' is missing required field 'containers'"
+        check_error: "Required field 'containers' is missing or empty"
+
+    - name: Podman containers | Verify | Resolve podman user runtime
+      when:
+        - current_check.podman_user | default('') | string | trim | length > 0
+        - not (_spec_invalid | bool)
+      block:
+        - name: Podman containers | Verify | Get podman user UID
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: _podman_uid
+          changed_when: false
+          become: true
+          become_user: "{{ current_check.podman_user }}"
+
+        - name: Podman containers | Verify | Set rootless podman environment
+          ansible.builtin.set_fact:
+            _podman_env:
+              XDG_RUNTIME_DIR: "/run/user/{{ _podman_uid.stdout | trim }}"
+              DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ _podman_uid.stdout | trim }}/bus"
+
+    - name: Podman containers | Verify | List all container names
+      when: not (_spec_invalid | bool)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - ps
+          - -a
+          - --format
+          - "{% raw %}{{.Names}}{% endraw %}"
+      register: _podman_ps_all
+      failed_when: false
+      changed_when: false
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman containers | Verify | List running container names
+      when: not (_spec_invalid | bool)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - ps
+          - --format
+          - "{% raw %}{{.Names}}{% endraw %}"
+      register: _podman_ps_running
+      failed_when: false
+      changed_when: false
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman containers | Verify | Handle list failure
+      when:
+        - not (_spec_invalid | bool)
+        - (_podman_ps_all.rc | default(1) | int != 0) or (_podman_ps_running.rc | default(1) | int != 0)
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Failed to list podman containers"
+        check_error: "{{ (_podman_ps_all.stderr | default(_podman_ps_running.stderr | default('podman ps failed'))) | trim }}"
+
+    - name: Podman containers | Verify | Parse name lists
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _podman_all_names: "{{ _all_parsed }}"
+        _podman_running_names: "{{ _running_parsed }}"
+      vars:
+        _all_parsed: "{{ (_podman_ps_all.stdout | default('')).replace(',', '\n').splitlines() | map('trim') | map('regex_replace', '^/', '') | reject('equalto', '') | list }}"
+        _running_parsed: "{{ (_podman_ps_running.stdout | default('')).replace(',', '\n').splitlines() | map('trim') | map('regex_replace', '^/', '') | reject('equalto', '') | list }}"
+
+    - name: Podman containers | Verify | Fail clearly when podman returned no containers
+      when:
+        - not (_spec_invalid | bool)
+        - (_podman_all_names | default([]) | length) == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "podman ps returned no containers"
+        check_error: "No containers were listed. The check runs as the connecting user by default; set become: true for rootful podman, or podman_user: <name> for another user's rootless containers."
+
+    - name: Podman containers | Verify | Evaluate each container
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _check_details: "{{ _check_details + [_ctr_result] }}"
+      loop: "{{ current_check.containers | default([]) }}"
+      loop_control:
+        label: "{{ item | trim }}"
+      vars:
+        _name: "{{ item | trim }}"
+        _exists: "{{ _name in (_podman_all_names | default([])) }}"
+        _running: "{{ _name in (_podman_running_names | default([])) }}"
+        _expected_state: "{{ current_check.expected_state | default('running') }}"
+        _actual_state: "{{ 'running' if (_running | bool) else ('present' if (_exists | bool) else 'absent') }}"
+        _ok: "{{ (_expected_state == 'running' and (_running | bool)) or (_expected_state in ['stopped', 'exited'] and (_exists | bool) and not (_running | bool)) or (_expected_state == 'present' and (_exists | bool)) or (_expected_state == 'absent' and not (_exists | bool)) }}"
+        _ctr_result:
+          name: "{{ _name }}"
+          expected_state: "{{ _expected_state }}"
+          actual_state: "{{ _actual_state }}"
+          result: "{{ 'pass' if (_ok | bool) else 'fail' }}"
+          error: "{{ '' if (_ok | bool) else (_name ~ ': ' ~ _actual_state ~ ' (expected ' ~ _expected_state ~ ')') }}"
+
+    - name: Podman containers | Verify | Set check status
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        check_success: "{{ _ctr_failures | length == 0 }}"
+        check_msg: "{{ 'All ' ~ (_check_details | length | string) ~ ' containers match expected state' if (_ctr_failures | length == 0) else ((_ctr_failures | length | string) ~ ' of ' ~ (_check_details | length | string) ~ ' containers are not in the expected state') }}"
+        check_error: "{{ _ctr_failures | map(attribute='error') | reject('equalto', '') | list | join('; ') }}"
+      vars:
+        _ctr_failures: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+
+  rescue:
+    - name: Podman containers | Verify | Capture unexpected error
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "Podman container verification raised an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Podman containers | Remediate
+  when:
+    - _do_remediate | bool
+    - not (check_success | bool)
+    - not (_spec_invalid | bool)
+    - _check_details | selectattr('result', 'equalto', 'fail') | list | length > 0
+  block:
+    - name: Podman containers | Remediate | Start or stop failed containers
+      ansible.builtin.command:
+        argv: "{{ ['podman', 'start', item.name] if (current_check.expected_state | default('running')) == 'running' else ['podman', 'stop', item.name] }}"
+      loop: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _ctr_remediate
+      failed_when: false
+      changed_when: (_ctr_remediate.rc | default(1) | int) == 0
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman containers | Remediate | Re-list all container names
+      ansible.builtin.command:
+        argv:
+          - podman
+          - ps
+          - -a
+          - --format
+          - "{% raw %}{{.Names}}{% endraw %}"
+      register: _podman_ps_all_after
+      failed_when: false
+      changed_when: false
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman containers | Remediate | Re-list running container names
+      ansible.builtin.command:
+        argv:
+          - podman
+          - ps
+          - --format
+          - "{% raw %}{{.Names}}{% endraw %}"
+      register: _podman_ps_running_after
+      failed_when: false
+      changed_when: false
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman containers | Remediate | Record remediation result
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: "{{ (_ctr_module_failures | length == 0) and (_still_failed | length == 0) }}"
+        _remediate_msg: "{{ 'Remediation brought all containers to the expected state' if (_ctr_module_failures | length == 0 and _still_failed | length == 0) else 'Remediation did not bring all containers to the expected state' }}"
+        _remediate_error: "{{ (_ctr_module_failures + _still_failed) | join('; ') }}"
+      vars:
+        _all_after: "{{ (_podman_ps_all_after.stdout | default('')).replace(',', '\n').splitlines() | map('trim') | map('regex_replace', '^/', '') | reject('equalto', '') | list }}"
+        _running_after: "{{ (_podman_ps_running_after.stdout | default('')).replace(',', '\n').splitlines() | map('trim') | map('regex_replace', '^/', '') | reject('equalto', '') | list }}"
+        _ctr_module_failures: "{{ _ctr_remediate.results | default([]) | rejectattr('rc', 'equalto', 0) | map(attribute='stderr') | list }}"
+        _still_failed: >-
+          {%- set rows = [] -%}
+          {%- set expected = current_check.expected_state | default('running') -%}
+          {%- for svc in (_check_details | selectattr('result', 'equalto', 'fail') | list) -%}
+            {%- set exists = svc.name in _all_after -%}
+            {%- set running = svc.name in _running_after -%}
+            {%- set ok = (expected == 'running' and running) or (expected in ['stopped', 'exited'] and exists and not running) or (expected == 'present' and exists) or (expected == 'absent' and not exists) -%}
+            {%- if not ok -%}
+              {%- set _ = rows.append(svc.name ~ ': ' ~ ('running' if running else ('present' if exists else 'absent')) ~ ' after remediation (expected ' ~ expected ~ ')') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ rows }}
+
+  rescue:
+    - name: Podman containers | Remediate | Capture unexpected error
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: false
+        _remediate_msg: "Podman container remediation raised an unexpected error"
+        _remediate_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Podman containers | Report
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/checks/_report.yml"

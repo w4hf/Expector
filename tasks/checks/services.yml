@@ -1,0 +1,297 @@
+---
+# check type: services
+# Spec:
+#   services[]            unit names
+#   expected_state        running | stopped
+#   expected_enabled      optional
+#   user_service          boolean — true = systemd user instance (systemctl --user)
+#   service_user          optional username whose user systemd instance to query
+# Remediate: restart when expected_state is running, stop when stopped.
+
+- name: Services | Initialize scope
+  ansible.builtin.set_fact:
+    _user_service: "{{ current_check.user_service | default(false) | bool }}"
+    _svc_become: "{{ current_check.become | default(_default_become) | bool }}"
+    _user_systemd_env: {}
+  vars:
+    _default_become: "{{ (_service_user | length > 0) or (not (current_check.user_service | default(false) | bool)) }}"
+    _service_user: "{{ current_check.service_user | default('') | string | trim }}"
+
+- name: Services | Verify
+  block:
+    - name: Services | Verify | Require a services list
+      when: current_check.services is not defined or current_check.services | length == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default('services') }}' is missing required field 'services'"
+        check_error: "Required field 'services' is missing or empty"
+
+    - name: Services | Verify | Resolve user systemd runtime
+      when:
+        - _user_service | bool
+        - not (_spec_invalid | bool)
+      block:
+        - name: Services | Verify | Get systemd user UID
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: _svc_user_uid
+          changed_when: false
+          become: "{{ _svc_become }}"
+          become_user: "{{ current_check.service_user if (current_check.service_user | default('') | string | trim | length > 0) else omit }}"
+
+        - name: Services | Verify | Set user systemd bus environment
+          ansible.builtin.set_fact:
+            _user_systemd_env:
+              XDG_RUNTIME_DIR: "/run/user/{{ _svc_user_uid.stdout | trim }}"
+              DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ _svc_user_uid.stdout | trim }}/bus"
+
+    - name: Services | Verify | Gather system service facts
+      when:
+        - not (_user_service | bool)
+        - not (_spec_invalid | bool)
+      ansible.builtin.service_facts:
+      become: "{{ _svc_become }}"
+
+    - name: Services | Verify | Query systemd user units
+      when:
+        - _user_service | bool
+        - not (_spec_invalid | bool)
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - --user
+          - show
+          - "{{ item if item.endswith('.service') else item ~ '.service' }}"
+          - --property=LoadState,ActiveState,SubState,UnitFileState
+          - --no-pager
+      loop: "{{ current_check.services | default([]) }}"
+      loop_control:
+        label: "{{ item }} (user)"
+      register: _user_svc_show
+      failed_when: false
+      changed_when: false
+      become: "{{ _svc_become }}"
+      become_user: "{{ current_check.service_user if (current_check.service_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _user_systemd_env }}"
+
+    - name: Services | Verify | Fail when the user systemd bus is unavailable
+      when:
+        - _user_service | bool
+        - not (_spec_invalid | bool)
+        - _user_svc_show is defined
+        - _user_svc_show.results | default([]) | length > 0
+        - _user_svc_show.results | selectattr('rc', 'ne', 0) | list | length == (_user_svc_show.results | length)
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Unable to query systemd user services"
+        check_error: "{{ (_user_svc_show.results[0].stderr | default(_user_svc_show.results[0].msg | default('systemctl --user failed')) | trim) ~ '. Set service_user if the units belong to another account, and ensure lingering is enabled for that user.' }}"
+
+    - name: Services | Verify | Build status map
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _svc_status_map: "{{ _user_map if (_user_service | bool) else _system_map }}"
+      vars:
+        _system_map: >-
+          {%- set ns = namespace(m={}) -%}
+          {%- for name in (current_check.services | default([])) -%}
+            {%- set facts = ansible_facts.services[name ~ '.service'] | default(ansible_facts.services[name] | default({})) -%}
+            {%- set ns.m = ns.m | combine({name: {'state': facts.state | default('absent'), 'enabled': facts.status | default('absent')}}) -%}
+          {%- endfor -%}
+          {{ ns.m }}
+        _user_map: >-
+          {%- set ns = namespace(m={}) -%}
+          {%- for r in (_user_svc_show.results | default([])) -%}
+            {%- set p = namespace(load='unknown', active='unknown', sub='unknown', unitfile='unknown', state='absent', enabled='absent') -%}
+            {%- for line in (r.stdout | default('')).splitlines() -%}
+              {%- if line.startswith('LoadState=') -%}
+                {%- set p.load = line.split('=', 1)[1] -%}
+              {%- elif line.startswith('ActiveState=') -%}
+                {%- set p.active = line.split('=', 1)[1] -%}
+              {%- elif line.startswith('SubState=') -%}
+                {%- set p.sub = line.split('=', 1)[1] -%}
+              {%- elif line.startswith('UnitFileState=') -%}
+                {%- set p.unitfile = line.split('=', 1)[1] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if (r.rc | default(0) | int != 0) or p.load == 'not-found' -%}
+              {%- set p.state = 'absent' -%}
+              {%- set p.enabled = 'absent' -%}
+            {%- elif p.active == 'active' -%}
+              {%- set p.state = 'running' -%}
+              {%- set p.enabled = p.unitfile -%}
+            {%- elif p.active in ['inactive', 'failed', 'deactivating'] -%}
+              {%- set p.state = 'stopped' -%}
+              {%- set p.enabled = p.unitfile -%}
+            {%- else -%}
+              {%- set p.state = p.sub if p.sub != 'unknown' else p.active -%}
+              {%- set p.enabled = p.unitfile -%}
+            {%- endif -%}
+            {%- set ns.m = ns.m | combine({r.item: {'state': p.state, 'enabled': p.enabled}}) -%}
+          {%- endfor -%}
+          {{ ns.m }}
+
+    - name: Services | Verify | Evaluate each service
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _check_details: "{{ _check_details + [_svc_result] }}"
+      loop: "{{ current_check.services | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        _svc_status: "{{ _svc_status_map[item] | default({'state': 'absent', 'enabled': 'absent'}) }}"
+        _actual_state: "{{ _svc_status.state | default('absent') }}"
+        _actual_enabled: "{{ _svc_status.enabled | default('absent') }}"
+        _expected_state: "{{ current_check.expected_state | default('running') }}"
+        _state_ok: "{{ (_expected_state == 'running' and _actual_state == 'running') or (_expected_state in ['stopped', 'inactive'] and _actual_state in ['stopped', 'inactive']) }}"
+        _enabled_ok: "{{ (current_check.expected_enabled is not defined) or ((current_check.expected_enabled | bool) and _actual_enabled in ['enabled', 'enabled-runtime', 'static', 'generated', 'alias']) or ((not current_check.expected_enabled | bool) and _actual_enabled in ['disabled', 'masked', 'absent']) }}"
+        _ok: "{{ (_state_ok | bool) and (_enabled_ok | bool) }}"
+        _svc_result:
+          name: "{{ item }}"
+          user_service: "{{ _user_service | bool }}"
+          expected_state: "{{ _expected_state }}"
+          actual_state: "{{ _actual_state }}"
+          expected_enabled: "{{ current_check.expected_enabled | default('not-checked') }}"
+          actual_enabled: "{{ _actual_enabled }}"
+          result: "{{ 'pass' if (_ok | bool) else 'fail' }}"
+          error: "{{ '' if (_ok | bool) else (item ~ ': state=' ~ _actual_state ~ ' (expected ' ~ _expected_state ~ ')' ~ (('; enabled=' ~ _actual_enabled ~ ' (expected ' ~ (current_check.expected_enabled | string) ~ ')') if current_check.expected_enabled is defined else '')) }}"
+
+    - name: Services | Verify | Set check status
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        check_success: "{{ _svc_failures | length == 0 }}"
+        check_msg: "{{ 'All ' ~ (_check_details | length | string) ~ ' ' ~ _scope_label ~ ' match expected state' ~ _enabled_suffix if (_svc_failures | length == 0) else ((_svc_failures | length | string) ~ ' of ' ~ (_check_details | length | string) ~ ' ' ~ _scope_label ~ ' are not in the expected state') }}"
+        check_error: "{{ _svc_failures | map(attribute='error') | reject('equalto', '') | list | join('; ') }}"
+      vars:
+        _svc_failures: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+        _enabled_suffix: "{{ ' and enablement' if current_check.expected_enabled is defined else '' }}"
+        _scope_label: "{{ 'user services' if (_user_service | bool) else 'services' }}"
+
+  rescue:
+    - name: Services | Verify | Capture unexpected error
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "Services verification raised an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Services | Remediate
+  when:
+    - _do_remediate | bool
+    - not (check_success | bool)
+    - not (_spec_invalid | bool)
+    - _check_details | selectattr('result', 'equalto', 'fail') | list | length > 0
+  block:
+    - name: Services | Remediate | Restart or stop failed services
+      ansible.builtin.systemd:
+        name: "{{ item.name }}"
+        state: "{{ 'restarted' if (current_check.expected_state | default('running')) == 'running' else 'stopped' }}"
+        enabled: "{{ current_check.expected_enabled | default(omit) }}"
+        scope: "{{ 'user' if (_user_service | bool) else 'system' }}"
+      loop: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _svc_remediate
+      failed_when: false
+      become: "{{ _svc_become }}"
+      become_user: "{{ current_check.service_user if (current_check.service_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _user_systemd_env if (_user_service | bool) else {} }}"
+
+    - name: Services | Remediate | Re-gather system service facts
+      when: not (_user_service | bool)
+      ansible.builtin.service_facts:
+      become: "{{ _svc_become }}"
+
+    - name: Services | Remediate | Re-query systemd user units
+      when: _user_service | bool
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - --user
+          - show
+          - "{{ item.name if item.name.endswith('.service') else item.name ~ '.service' }}"
+          - --property=LoadState,ActiveState,SubState,UnitFileState
+          - --no-pager
+      loop: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+      loop_control:
+        label: "{{ item.name }} (user)"
+      register: _user_svc_show_after
+      failed_when: false
+      changed_when: false
+      become: "{{ _svc_become }}"
+      become_user: "{{ current_check.service_user if (current_check.service_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _user_systemd_env }}"
+
+    - name: Services | Remediate | Record remediation result
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: "{{ (_svc_module_failures | length == 0) and (_still_failed | length == 0) }}"
+        _remediate_msg: "{{ 'Remediation brought all ' ~ _scope_label ~ ' to the expected state' if (_svc_module_failures | length == 0 and _still_failed | length == 0) else 'Remediation did not bring all ' ~ _scope_label ~ ' to the expected state' }}"
+        _remediate_error: "{{ (_svc_module_failures + _still_failed) | join('; ') }}"
+      vars:
+        _scope_label: "{{ 'user services' if (_user_service | bool) else 'services' }}"
+        _svc_module_failures: "{{ _svc_remediate.results | default([]) | selectattr('failed', 'equalto', true) | map(attribute='msg') | list }}"
+        _still_failed: "{{ _user_still_failed if (_user_service | bool) else _system_still_failed }}"
+        _system_still_failed: >-
+          {%- set rows = [] -%}
+          {%- set expected = current_check.expected_state | default('running') -%}
+          {%- for svc in (_check_details | selectattr('result', 'equalto', 'fail') | list) -%}
+            {%- set facts = ansible_facts.services[svc.name ~ '.service'] | default(ansible_facts.services[svc.name] | default({})) -%}
+            {%- set state = facts.state | default('absent') -%}
+            {%- set enabled = facts.status | default('absent') -%}
+            {%- set state_ok = (expected == 'running' and state == 'running') or (expected in ['stopped', 'inactive'] and state in ['stopped', 'inactive']) -%}
+            {%- set enabled_ok = (current_check.expected_enabled is not defined) or ((current_check.expected_enabled | bool) and enabled in ['enabled', 'enabled-runtime', 'static', 'generated', 'alias']) or ((not current_check.expected_enabled | bool) and enabled in ['disabled', 'masked', 'absent']) -%}
+            {%- if not state_ok -%}
+              {%- set _ = rows.append(svc.name ~ ': state=' ~ state ~ ' after remediation (expected ' ~ expected ~ ')') -%}
+            {%- endif -%}
+            {%- if not enabled_ok -%}
+              {%- set _ = rows.append(svc.name ~ ': enabled=' ~ enabled ~ ' after remediation (expected ' ~ (current_check.expected_enabled | string) ~ ')') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ rows }}
+        _user_still_failed: >-
+          {%- set rows = [] -%}
+          {%- set expected = current_check.expected_state | default('running') -%}
+          {%- for r in (_user_svc_show_after.results | default([])) -%}
+            {%- set p = namespace(load='unknown', active='unknown', unitfile='unknown', state='absent', enabled='absent') -%}
+            {%- for line in (r.stdout | default('')).splitlines() -%}
+              {%- if line.startswith('LoadState=') -%}
+                {%- set p.load = line.split('=', 1)[1] -%}
+              {%- elif line.startswith('ActiveState=') -%}
+                {%- set p.active = line.split('=', 1)[1] -%}
+              {%- elif line.startswith('UnitFileState=') -%}
+                {%- set p.unitfile = line.split('=', 1)[1] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if (r.rc | default(0) | int != 0) or p.load == 'not-found' -%}
+              {%- set p.state = 'absent' -%}
+              {%- set p.enabled = 'absent' -%}
+            {%- elif p.active == 'active' -%}
+              {%- set p.state = 'running' -%}
+              {%- set p.enabled = p.unitfile -%}
+            {%- else -%}
+              {%- set p.state = 'stopped' -%}
+              {%- set p.enabled = p.unitfile -%}
+            {%- endif -%}
+            {%- set state_ok = (expected == 'running' and p.state == 'running') or (expected in ['stopped', 'inactive'] and p.state in ['stopped', 'inactive']) -%}
+            {%- set enabled_ok = (current_check.expected_enabled is not defined) or ((current_check.expected_enabled | bool) and p.enabled in ['enabled', 'enabled-runtime', 'static', 'generated', 'alias']) or ((not current_check.expected_enabled | bool) and p.enabled in ['disabled', 'masked', 'absent']) -%}
+            {%- if not state_ok -%}
+              {%- set _ = rows.append(r.item.name ~ ': state=' ~ p.state ~ ' after remediation (expected ' ~ expected ~ ')') -%}
+            {%- endif -%}
+            {%- if not enabled_ok -%}
+              {%- set _ = rows.append(r.item.name ~ ': enabled=' ~ p.enabled ~ ' after remediation (expected ' ~ (current_check.expected_enabled | string) ~ ')') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ rows }}
+
+  rescue:
+    - name: Services | Remediate | Capture unexpected error
+      ansible.builtin.set_fact:
+        _remediate_attempted: true
+        _remediate_success: false
+        _remediate_msg: "Services remediation raised an unexpected error"
+        _remediate_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Services | Report
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/checks/_report.yml"

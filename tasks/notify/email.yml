@@ -1,0 +1,64 @@
+---
+# Notification type: email
+# SMTP comes from the named notificator (notificators in settings.yml).
+# Message details (to, subject, body, attachments) come from errors_report
+# and/or full_report on current_notify.
+
+- name: Email | Resolve notificator
+  ansible.builtin.set_fact:
+    _email_smtp_matches: "{{ notificators | default([]) | selectattr('name', 'defined') | selectattr('name', 'equalto', current_notify.notificator | default('')) | list }}"
+
+- name: Email | Select notificator
+  ansible.builtin.set_fact:
+    _email_smtp: "{{ _email_smtp_matches[0] if (_email_smtp_matches | length > 0) else {} }}"
+    _email_smtp_ready: "{{ (_email_smtp_matches | length > 0) and ((_email_smtp_matches[0]['smtp_host'] | default(_email_smtp_matches[0]['host'] | default('')) | string | trim | length) > 0) }}"
+
+- name: Email | Skip when notificator is missing
+  when: (_email_smtp_matches | default([]) | length) == 0
+  ansible.builtin.debug:
+    msg: "Email notification '{{ current_notify.name | default('email') }}' skipped: notificator '{{ current_notify.notificator | default('') }}' not found in notificators"
+
+- name: Email | Skip when SMTP host is missing
+  when:
+    - (_email_smtp_matches | default([]) | length) > 0
+    - not (_email_smtp_ready | bool)
+  ansible.builtin.debug:
+    msg: "Email notification '{{ current_notify.name | default('email') }}' skipped: notificator '{{ current_notify.notificator | default('') }}' has no smtp_host"
+
+- name: Email | Skip when no report messages are configured
+  when:
+    - _email_smtp_ready | bool
+    - current_notify.errors_report is not defined
+    - current_notify.full_report is not defined
+  ansible.builtin.debug:
+    msg: "Email notification '{{ current_notify.name | default('email') }}' skipped: define errors_report and/or full_report"
+
+- name: Email | Send errors report
+  when:
+    - _email_smtp_ready | bool
+    - current_notify.errors_report is defined
+    - current_notify.errors_report.enabled | default(true) | bool
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/notify/_email_send.yml"
+  vars:
+    _email_kind: errors_report
+    _email_msg: "{{ current_notify.errors_report }}"
+
+- name: Email | Send full report
+  when:
+    - _email_smtp_ready | bool
+    - current_notify.full_report is defined
+    - (current_notify.full_report.enabled | default(current_notify.send_full_report | default(false))) | bool
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/notify/_email_send.yml"
+  vars:
+    _email_kind: full_report
+    _email_msg: "{{ current_notify.full_report }}"
+
+- name: Email | Skip full report when disabled
+  when:
+    - _email_smtp_ready | bool
+    - current_notify.full_report is defined
+    - not ((current_notify.full_report.enabled | default(current_notify.send_full_report | default(false))) | bool)
+  ansible.builtin.debug:
+    msg: "Email notification '{{ current_notify.name | default('email') }}' full_report skipped (enabled=false)"

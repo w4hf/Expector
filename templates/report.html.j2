@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Expector Report</title>
+  <style>
+    :root {
+      --bg: #f3f2ee;
+      --paper: #fffcf8;
+      --ink: #1b1a17;
+      --muted: #6e6a63;
+      --line: #e6e2d8;
+      --line-strong: #d4cfc3;
+      --pass: #2c6b4a;
+      --pass-bg: #e8f3ec;
+      --fail: #a33b32;
+      --fail-bg: #f7e7e5;
+      --down: #6b3a58;
+      --down-bg: #f3e8ee;
+      --fix: #6a5420;
+      --fix-bg: #f4edd8;
+      --shadow: 0 1px 0 rgba(27, 26, 23, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    .wrap {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+    }
+
+    header p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    header time {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .kpi {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px 18px 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .kpi .label {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .kpi .value {
+      margin-top: 8px;
+      font-size: 32px;
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .kpi.pass .value { color: var(--pass); }
+    .kpi.fail .value { color: var(--fail); }
+    .kpi.down .value { color: var(--down); }
+
+    .health {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px 18px 18px;
+      margin-bottom: 36px;
+      box-shadow: var(--shadow);
+    }
+
+    .health-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .health-meta strong {
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .bar {
+      height: 8px;
+      background: var(--line);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: var(--pass);
+      border-radius: 99px;
+    }
+
+    .bar.alert > span { background: var(--fail); }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .hosts {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 36px;
+    }
+
+    .host-card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .host-card .name {
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      word-break: break-all;
+    }
+
+    .host-card .meta {
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .dots {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--line-strong);
+    }
+
+    .dot.ok { background: var(--pass); }
+    .dot.bad { background: var(--fail); }
+    .dot.down { background: var(--down); }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .host-results {
+      margin-bottom: 32px;
+    }
+
+    .host-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin: 0 0 10px;
+    }
+
+    .host-heading h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      text-transform: none;
+      word-break: break-all;
+    }
+
+    .host-heading .host-score {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .results-table > thead > tr > th,
+    .results-table > tbody > tr > td {
+      text-align: left;
+      padding: 12px 14px;
+      vertical-align: top;
+    }
+
+    .results-table > thead > tr > th {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: #faf8f4;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .results-table > tbody > tr > td {
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .results-table > tbody > tr.check-start > td {
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .results-table > tbody > tr:first-child > td { border-top: 0; }
+    .results-table > tbody > tr:last-child > td { border-bottom: 0; }
+    .results-table > tbody > tr.check-start:has(+ tr.check-cont) > td {
+      border-bottom: 0;
+      padding-bottom: 6px;
+    }
+    .results-table > tbody > tr.check-cont > td {
+      border-top: 0;
+      border-bottom: 0;
+      padding-top: 6px;
+      padding-bottom: 6px;
+    }
+    .results-table > tbody > tr.check-cont:has(+ tr.check-start) > td,
+    .results-table > tbody > tr.check-cont:last-child > td {
+      padding-bottom: 12px;
+    }
+    .results-table > tbody > tr:hover > td { background: #fbfaf6; }
+
+    .col-check { width: 18%; }
+    .col-type { width: 10%; }
+    .col-detect { width: 10%; }
+    .col-item { width: 24%; }
+    .col-exp { width: 12%; }
+    .col-act { width: 12%; }
+    .col-rem { width: 14%; }
+
+    .check-name { font-weight: 600; }
+    .check-type {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .msg {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .err {
+      margin-top: 4px;
+      color: var(--fail);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .item-key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .item-sub {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.35;
+    }
+
+    .val-exp,
+    .val-act {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .val-exp { color: var(--muted); }
+    .val-act { color: var(--fail); font-weight: 600; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .pill::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .pill.ok { color: var(--pass); background: var(--pass-bg); }
+    .pill.bad { color: var(--fail); background: var(--fail-bg); }
+    .pill.down { color: var(--down); background: var(--down-bg); }
+    .pill.fix { color: var(--fix); background: var(--fix-bg); }
+    .pill.muted { color: var(--muted); background: #f3f1eb; }
+    .pill + .pill { margin-left: 6px; }
+
+    .empty {
+      background: var(--paper);
+      border: 1px dashed var(--line-strong);
+      border-radius: 12px;
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 800px) {
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .wrap { padding: 28px 16px 56px; }
+      .col-type { display: none; }
+      .results-table { table-layout: auto; }
+    }
+  </style>
+</head>
+<body>
+  {% set results = check_results_by_host | default({}) %}
+  {% set summary = check_summary | default({}) %}
+  {% set host_stats = check_host_stats | default({}) %}
+  {% set hosts_n = summary.hosts_checked | default(results | length) | int %}
+  {% set unreachable_n = summary.hosts_unreachable | default(0) | int %}
+  {% set total = summary.checks_total | default(0) | int %}
+  {% set passed = summary.checks_passed | default(0) | int %}
+  {% set failed = summary.checks_failed | default(0) | int %}
+  {% set rate = ((passed / total * 100) | round(0) | int) if total > 0 else 0 %}
+  {% set generated_at = expector_report_generated_at | default(now(fmt='%d %b %Y · %H:%M')) %}
+  {% set generated_iso = expector_report_generated_iso | default(now(fmt='%Y-%m-%dT%H:%M:%S')) %}
+
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Expector report</h1>
+        <p>{{ hosts_n }} host{{ 's' if hosts_n != 1 else '' }} · {{ total }} check{{ 's' if total != 1 else '' }}{% if unreachable_n > 0 %} · {{ unreachable_n }} unreachable{% endif %}</p>
+      </div>
+      <time datetime="{{ generated_iso | e }}">{{ generated_at | e }}</time>
+    </header>
+
+    <section class="kpis" aria-label="Dashboard">
+      <article class="kpi">
+        <div class="label">Hosts</div>
+        <div class="value">{{ hosts_n }}</div>
+      </article>
+      <article class="kpi">
+        <div class="label">Checks</div>
+        <div class="value">{{ total }}</div>
+      </article>
+      <article class="kpi pass">
+        <div class="label">Passed</div>
+        <div class="value">{{ passed }}</div>
+      </article>
+      <article class="kpi fail">
+        <div class="label">Failed</div>
+        <div class="value">{{ failed }}</div>
+      </article>
+      <article class="kpi down">
+        <div class="label">Unreachable</div>
+        <div class="value">{{ unreachable_n }}</div>
+      </article>
+    </section>
+
+    <section class="health" aria-label="Pass rate">
+      <div class="health-meta">
+        <span>Pass rate</span>
+        <strong>{{ rate }}%</strong>
+      </div>
+      <div class="bar">
+        <span style="width: {{ rate }}%"></span>
+      </div>
+    </section>
+
+    {% if results | length == 0 %}
+      <div class="empty">No check results were collected.</div>
+    {% else %}
+      <h2>Hosts</h2>
+      <section class="hosts" aria-label="Hosts overview">
+        {% for host, checks in results | dictsort %}
+          {% set stats = host_stats[host] | default({'passed': 0, 'failed': 0, 'total': checks | length, 'unreachable': false}) %}
+          <a class="host-card" href="#host-{{ host | regex_replace('[^A-Za-z0-9_-]', '-') | e }}">
+            <div class="name">{{ host | e }}</div>
+            <div class="meta">
+              {% if stats.unreachable | default(false) | bool %}
+                <span>Unreachable</span>
+              {% else %}
+                <span>{{ stats.passed }}/{{ stats.total }} passed</span>
+              {% endif %}
+              <span class="dots" aria-hidden="true">
+                {% for c in checks %}
+                  <span class="dot {{ 'down' if (c.check_unreachable | default(false) | bool or c.error_flag | default('') == 'UNREACHABLE') else ('ok' if c.check_success | bool else 'bad') }}"></span>
+                {% endfor %}
+              </span>
+            </div>
+          </a>
+        {% endfor %}
+      </section>
+
+      <h2>Results</h2>
+      {% for host, checks in results | dictsort %}
+        {% set stats = host_stats[host] | default({'passed': 0, 'failed': 0, 'total': checks | length, 'unreachable': false}) %}
+        <section class="host-results" id="host-{{ host | regex_replace('[^A-Za-z0-9_-]', '-') | e }}">
+          <div class="host-heading">
+            <h3>{{ host | e }}</h3>
+            <p class="host-score">
+              {% if stats.unreachable | default(false) | bool %}
+                Unreachable · checks skipped
+              {% else %}
+                {{ stats.passed }} passed · {{ stats.failed }} failed
+              {% endif %}
+            </p>
+          </div>
+          <div class="panel">
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th class="col-check">Check</th>
+                  <th class="col-type">Type</th>
+                  <th class="col-detect">Detection</th>
+                  <th class="col-item">Item</th>
+                  <th class="col-exp">Expected</th>
+                  <th class="col-act">Actual</th>
+                  <th class="col-rem">Remediation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for c in checks %}
+                  {% set failed_items = c.details | default([]) | selectattr('result', 'equalto', 'fail') | list %}
+                  {% set is_unreach = (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %}
+                  {% set rns = namespace(rows=[]) %}
+                  {% for d in failed_items %}
+                    {% if d.mismatches is defined and d.mismatches is sequence and d.mismatches is not string and (d.mismatches | length > 0) %}
+                      {% for m in d.mismatches %}
+                        {% if (m.kind | default('body')) == 'body' %}
+                          {% set rns.rows = rns.rows + [{'item': m.key | default('body'), 'sub': ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim, 'expected': m.expected | default(''), 'actual': m.actual | default('')}] %}
+                        {% elif (m.kind | default('')) == 'status' %}
+                          {% set rns.rows = rns.rows + [{'item': ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim, 'sub': 'HTTP status', 'expected': m.expected | default(''), 'actual': m.actual | default('')}] %}
+                        {% else %}
+                          {% set rns.rows = rns.rows + [{'item': ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim, 'sub': '', 'expected': m.expected | default(''), 'actual': m.actual | default('')}] %}
+                        {% endif %}
+                      {% endfor %}
+                    {% else %}
+                      {% set label = d.name | default(d.command | default(d.url | default('item'))) %}
+                      {% if d.expected_state is defined %}
+                        {% set rns.rows = rns.rows + [{'item': label, 'sub': '', 'expected': d.expected_state, 'actual': d.actual_state | default('—')}] %}
+                      {% endif %}
+                      {% if d.expected_enabled is defined and (d.expected_enabled | string) not in ['not-checked', ''] %}
+                        {% set rns.rows = rns.rows + [{'item': label, 'sub': 'enabled', 'expected': d.expected_enabled, 'actual': d.actual_enabled | default('—')}] %}
+                      {% endif %}
+                      {% if d.expected_rc is defined and (d.expected_rc | string) != (d.actual_rc | default('') | string) %}
+                        {% set rns.rows = rns.rows + [{'item': label, 'sub': '', 'expected': 'rc ' ~ (d.expected_rc | string), 'actual': 'rc ' ~ (d.actual_rc | default('—') | string)}] %}
+                      {% endif %}
+                      {% if d.expected_regex is defined and (d.expected_regex | string | length > 0) %}
+                        {% set rns.rows = rns.rows + [{'item': label, 'sub': 'output', 'expected': d.expected_regex, 'actual': (d.stdout | default(d.stderr | default('—')) | trim)[:80]}] %}
+                      {% endif %}
+                      {% if d.expected_status is defined %}
+                        {% if (d.expected_status | string) != (d.actual_status | default('') | string) %}
+                          {% set rns.rows = rns.rows + [{'item': label, 'sub': 'HTTP status', 'expected': d.expected_status, 'actual': d.actual_status | default('—')}] %}
+                        {% endif %}
+                        {% if d.error | default('') | length > 0 and (d.expected_status | string) == (d.actual_status | default('') | string) %}
+                          {% set rns.rows = rns.rows + [{'item': label, 'sub': 'body', 'expected': 'match', 'actual': d.error}] %}
+                        {% endif %}
+                      {% endif %}
+                      {% if d.expected_state is not defined and d.expected_rc is not defined and d.expected_status is not defined and d.error | default('') | length > 0 %}
+                        {% set rns.rows = rns.rows + [{'item': label, 'sub': '', 'expected': '', 'actual': d.error}] %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                  {% if rns.rows | length == 0 %}
+                    {% if (not (c.check_success | bool)) and (c.check_error | default('') | length > 0) %}
+                      {% set rns.rows = [{'item': '', 'sub': '', 'expected': '', 'actual': c.check_error}] %}
+                    {% else %}
+                      {% set rns.rows = [{'item': '', 'sub': '', 'expected': '', 'actual': ''}] %}
+                    {% endif %}
+                  {% endif %}
+                  {% for row in rns.rows %}
+                    <tr class="{{ 'check-start' if loop.first else 'check-cont' }}">
+                      {% if loop.first %}
+                        <td class="col-check">
+                          <div class="check-name">{{ c.check_name | default('unnamed') | e }}</div>
+                          {% if c.check_msg | default('') | length > 0 %}
+                            <div class="msg">{{ c.check_msg | e }}</div>
+                          {% endif %}
+                        </td>
+                        <td class="col-type check-type">{{ c.check_type | default('') | e }}</td>
+                        <td class="col-detect">
+                          {% if is_unreach %}
+                            <span class="pill down">Unreachable</span>
+                          {% elif c.check_success | bool %}
+                            <span class="pill ok">Pass</span>
+                          {% else %}
+                            <span class="pill bad">Fail</span>
+                          {% endif %}
+                        </td>
+                      {% else %}
+                        <td class="col-check"></td>
+                        <td class="col-type"></td>
+                        <td class="col-detect"></td>
+                      {% endif %}
+                      <td class="col-item">
+                        {% if row.item | default('') | string | length > 0 %}
+                          <div class="item-key">{{ row.item | e }}</div>
+                        {% endif %}
+                        {% if row.sub | default('') | string | length > 0 %}
+                          <div class="item-sub">{{ row.sub | e }}</div>
+                        {% endif %}
+                      </td>
+                      <td class="col-exp{% if row.expected | default('') | string | length > 0 %} val-exp{% endif %}">{{ row.expected | default('') | e }}</td>
+                      <td class="col-act{% if row.actual | default('') | string | length > 0 %} val-act{% endif %}">{{ row.actual | default('') | e }}</td>
+                      {% if loop.first %}
+                        <td class="col-rem">
+                          {% if c.remediate_attempted | default(false) | bool %}
+                            <span class="pill {{ 'ok' if c.remediate_success | bool else 'fix' }}">
+                              {{ 'Remediated' if c.remediate_success | bool else 'Remediate failed' }}
+                            </span>
+                            {% if c.remediate_msg | default('') | length > 0 %}
+                              <div class="msg">{{ c.remediate_msg | e }}</div>
+                            {% endif %}
+                            {% if c.remediate_error | default('') | length > 0 %}
+                              <div class="err">{{ c.remediate_error | e }}</div>
+                            {% endif %}
+                          {% else %}
+                            <span class="pill muted">Not attempted</span>
+                          {% endif %}
+                        </td>
+                      {% else %}
+                        <td class="col-rem"></td>
+                      {% endif %}
+                    </tr>
+                  {% endfor %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endfor %}
+    {% endif %}
+
+    <footer>Generated by expector · {{ playbook_dir | e }}</footer>
+  </div>
+</body>
+</html>

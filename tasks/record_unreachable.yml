@@ -1,0 +1,54 @@
+---
+# Build unreachable-host reports on localhost. Unreachable hosts cannot
+# set_fact for themselves, so this runs after the ping play.
+
+- name: Resolve reachable and unreachable host lists
+  ansible.builtin.set_fact:
+    expector_reachable_hosts: "{{ groups['expector_reachable'] | default([]) }}"
+    expector_unreachable_hosts: "{{ _targeted | difference(groups['expector_reachable'] | default([])) }}"
+  vars:
+    _targeted: "{{ expector_play_hosts | default(groups['all']) }}"
+
+- name: Build UNREACHABLE check reports
+  ansible.builtin.set_fact:
+    expector_unreachable_results: "{{ _reports }}"
+  vars:
+    _reports: >-
+      {%- set ns = namespace(out={}) -%}
+      {%- for h in (expector_unreachable_hosts | default([])) -%}
+        {%- set ping = hostvars[h]['expector_ping'] | default({}) -%}
+        {%- set err = ping.msg | default(ping.message | default('Host did not respond to ping')) -%}
+        {%- set report = {
+          'check_name': 'Host reachability',
+          'check_type': 'reachability',
+          'check_host': h,
+          'check_success': false,
+          'check_failed': true,
+          'check_unreachable': true,
+          'error_flag': 'UNREACHABLE',
+          'check_msg': 'Host is unreachable; all checks were skipped',
+          'check_error': err | string,
+          'remediate_attempted': false,
+          'remediate_success': false,
+          'remediate_msg': '',
+          'remediate_error': '',
+          'details': [{
+            'name': h,
+            'expected_state': 'reachable',
+            'actual_state': 'unreachable',
+            'result': 'fail',
+            'error': err | string
+          }]
+        } -%}
+        {%- set ns.out = ns.out | combine({h: [report]}) -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+- name: Display reachable hosts
+  ansible.builtin.debug:
+    msg: "Reachable hosts: {{ (expector_reachable_hosts | default([])) | join(', ') | default('(none)', true) }}"
+
+- name: Display unreachable hosts
+  ansible.builtin.debug:
+    msg: "Unreachable hosts (excluded from checks): {{ expector_unreachable_hosts | join(', ') }}"
+  when: (expector_unreachable_hosts | default([])) | length > 0

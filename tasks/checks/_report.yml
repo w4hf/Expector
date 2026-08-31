@@ -1,0 +1,33 @@
+---
+# Shared report section. Each check type should set:
+#   check_success, check_msg, check_error
+#   _check_details (optional list of per-item results)
+#   _remediate_attempted, _remediate_success, _remediate_msg, _remediate_error
+#
+# Required keys on check_report:
+#   check_name, check_success, check_failed, check_msg, check_error
+# Optional:
+#   check_unreachable, error_flag (UNREACHABLE when the host was down)
+
+- name: "{{ current_check.type | default('check') }} | Report | Build standard check_report"
+  ansible.builtin.set_fact:
+    check_report:
+      check_name: "{{ current_check.name | default(current_check.type | default('unnamed')) }}"
+      check_type: "{{ current_check.type | default('unknown') }}"
+      check_host: "{{ inventory_hostname }}"
+      check_success: "{{ check_success | bool }}"
+      check_failed: "{{ not (check_success | bool) }}"
+      check_msg: "{{ check_msg | default('') }}"
+      check_error: "{{ check_error | default('') }}"
+      check_unreachable: "{{ check_unreachable | default(false) | bool }}"
+      error_flag: "{{ error_flag | default('') }}"
+      remediate_attempted: "{{ _remediate_attempted | default(false) | bool }}"
+      remediate_success: "{{ _remediate_success | default(false) | bool }}"
+      remediate_msg: "{{ _remediate_msg | default('') }}"
+      remediate_error: "{{ _remediate_error | default('') }}"
+      details: "{{ _check_details | default([]) }}"
+
+- name: "{{ current_check.type | default('check') }} | Report | Display result"
+  ansible.builtin.debug:
+    var: check_report
+  when: current_check.report | default(true) | bool

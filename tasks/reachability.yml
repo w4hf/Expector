@@ -1,0 +1,21 @@
+---
+# Probe each host before any checklist item runs.
+# Unreachable and failed pings are excluded from later plays via the
+# in-memory group expector_reachable. Reports are built on localhost.
+
+- name: Remember hosts targeted by this run
+  ansible.builtin.set_fact:
+    expector_play_hosts: "{{ ansible_play_hosts_all }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+
+- name: Ping host
+  ansible.builtin.ping:
+  register: expector_ping
+  ignore_errors: true
+
+- name: Assign reachable hosts to in-memory group
+  ansible.builtin.group_by:
+    key: expector_reachable
+  when: expector_ping.ping | default('') == 'pong'

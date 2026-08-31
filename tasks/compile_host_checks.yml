@@ -1,0 +1,33 @@
+---
+# Build host_check_map: { hostname: [ {name, type, remediate, report}, ... ] }
+# A host is targeted when checklist.hosts matches the host name or an inventory group it belongs to.
+
+- name: Initialize host_check_map
+  ansible.builtin.set_fact:
+    host_check_map: {}
+
+- name: Map each inventory host to the checks that target it
+  ansible.builtin.set_fact:
+    host_check_map: "{{ host_check_map | combine({item.0: (host_check_map[item.0] | default([])) + [_entry]}) }}"
+  loop: "{{ groups['all'] | product(checklist) | list }}"
+  loop_control:
+    label: "{{ item.0 }} <- {{ item.1.name | default(item.1.type | default('unnamed')) }}"
+  when:
+    - item.1.hosts is defined
+    - _host_is_targeted | bool
+  vars:
+    _target_names: "{{ (item.1.hosts | map('trim') | list) if (item.1.hosts is sequence and item.1.hosts is not string) else ((item.1.hosts | string | split(',')) | map('trim') | select('ne', '') | list) }}"
+    _host_is_targeted: "{{ _compile_targeted }}"
+    _compile_targeted: >-
+      {%- set ns = namespace(hit=false) -%}
+      {%- for t in _target_names -%}
+        {%- if item.0 == t or (t in groups and item.0 in groups[t]) -%}
+          {%- set ns.hit = true -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.hit }}
+    _entry:
+      name: "{{ item.1.name | default(item.1.type | default('unnamed')) }}"
+      type: "{{ item.1.type | default('unknown') }}"
+      remediate: "{{ item.1.remediate | default(false) | bool }}"
+      report: "{{ item.1.report | default(true) | bool }}"

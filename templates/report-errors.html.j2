@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Expector Errors</title>
+  <style>
+    :root {
+      --bg: #f3f2ee;
+      --paper: #fffcf8;
+      --ink: #1b1a17;
+      --muted: #6e6a63;
+      --line: #e6e2d8;
+      --line-strong: #d4cfc3;
+      --fail: #a33b32;
+      --fail-bg: #f7e7e5;
+      --down: #6b3a58;
+      --down-bg: #f3e8ee;
+      --fix: #6a5420;
+      --fix-bg: #f4edd8;
+      --pass: #2c6b4a;
+      --pass-bg: #e8f3ec;
+      --shadow: 0 1px 0 rgba(27, 26, 23, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 40px 20px 72px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+    }
+
+    header p {
+      margin: 4px 0 0;
+      color: var(--fail);
+      font-size: 13px;
+    }
+
+    header time {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .failure {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px 18px 14px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .host {
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      word-break: break-all;
+    }
+
+    .flag {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--down);
+      background: var(--down-bg);
+      vertical-align: middle;
+    }
+
+    .msg {
+      margin-top: 6px;
+      color: var(--fail);
+      font-size: 14px;
+    }
+
+    .cmp {
+      width: 100%;
+      margin-top: 10px;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .cmp th,
+    .cmp td {
+      text-align: left;
+      padding: 5px 8px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .cmp th {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: #f3f1eb;
+    }
+
+    .cmp td {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .cmp td.item {
+      font-family: inherit;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .cmp .item-key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 600;
+    }
+
+    .cmp .item-sub {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .cmp td.exp { color: var(--muted); }
+    .cmp td.act { color: var(--fail); font-weight: 600; }
+    .cmp tr:last-child td { border-bottom: 0; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .pill::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .pill.ok { color: var(--pass); background: var(--pass-bg); }
+    .pill.bad { color: var(--fail); background: var(--fail-bg); }
+    .pill.fix { color: var(--fix); background: var(--fix-bg); }
+    .pill.muted { color: var(--muted); background: #efece4; }
+
+    .remediation {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #f3f1eb;
+    }
+
+    .remediation.ok {
+      background: var(--pass-bg);
+      border-color: #c8ddcf;
+    }
+
+    .remediation.bad {
+      background: var(--fix-bg);
+      border-color: #e4d6a8;
+    }
+
+    .remediation-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .remediation .pill {
+      background: #fffcf8;
+      box-shadow: inset 0 0 0 1px currentColor;
+      font-size: 12px;
+      padding: 4px 10px;
+    }
+
+    .remediation .label {
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .remediation.ok .label { color: var(--pass); }
+    .remediation.bad .label { color: var(--fix); }
+
+    .remediation .detail {
+      margin-top: 6px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .remediation .detail.err {
+      color: var(--fail);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    footer {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  {% set results = check_results_by_host | default({}) %}
+  {% set summary = check_summary | default({}) %}
+  {% set failed_n = summary.checks_failed | default(0) | int %}
+  {% set generated_at = expector_report_generated_at | default(now(fmt='%d %b %Y · %H:%M')) %}
+  {% set generated_iso = expector_report_generated_iso | default(now(fmt='%Y-%m-%dT%H:%M:%S')) %}
+
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Expector errors</h1>
+        <p>{{ failed_n }} failure{{ 's' if failed_n != 1 else '' }}</p>
+      </div>
+      <time datetime="{{ generated_iso | e }}">{{ generated_at | e }}</time>
+    </header>
+
+    {% for host, checks in results | dictsort %}
+      {% for c in checks %}
+        {% if not (c.check_success | bool) %}
+          {% set failed_items = c.details | default([]) | selectattr('result', 'equalto', 'fail') | list %}
+          {% set _failure_msg = (c.check_msg | default('Check failed')) if (failed_items | length > 0) else (c.check_error | default('') if (c.check_error | default('') | length > 0) else c.check_msg | default('Check failed')) %}
+          <article class="failure">
+            <div class="host">
+              {{ host | e }}
+              {% if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %}
+                <span class="flag">UNREACHABLE</span>
+              {% endif %}
+            </div>
+            <div class="msg">{{ _failure_msg | e }}</div>
+
+            {% if failed_items | length > 0 %}
+              <table class="cmp">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Expected</th>
+                    <th>Actual</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for d in failed_items %}
+                    {% if d.mismatches is defined and d.mismatches is sequence and d.mismatches is not string and (d.mismatches | length > 0) %}
+                      {% for m in d.mismatches %}
+                        {% if (m.kind | default('body')) == 'body' %}
+                          <tr>
+                            <td class="item">
+                              <div class="item-key">{{ m.key | default('body') | e }}</div>
+                              <div class="item-sub">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}</div>
+                            </td>
+                            <td class="exp">{{ m.expected | default('') | e }}</td>
+                            <td class="act">{{ m.actual | default('') | e }}</td>
+                          </tr>
+                        {% elif (m.kind | default('')) == 'status' %}
+                          <tr>
+                            <td class="item">
+                              <div class="item-key">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}</div>
+                              <div class="item-sub">HTTP status</div>
+                            </td>
+                            <td class="exp">{{ m.expected | default('') | e }}</td>
+                            <td class="act">{{ m.actual | default('') | e }}</td>
+                          </tr>
+                        {% else %}
+                          <tr>
+                            <td class="item">
+                              <div class="item-key">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}</div>
+                            </td>
+                            <td class="exp">{{ m.expected | default('') | e }}</td>
+                            <td class="act">{{ m.actual | default('') | e }}</td>
+                          </tr>
+                        {% endif %}
+                      {% endfor %}
+                    {% else %}
+                      {% set label = d.name | default(d.command | default(d.url | default('item'))) %}
+                      {% if d.expected_state is defined %}
+                        <tr>
+                          <td class="item">{{ label | e }}</td>
+                          <td class="exp">{{ d.expected_state | e }}</td>
+                          <td class="act">{{ d.actual_state | default('—') | e }}</td>
+                        </tr>
+                      {% endif %}
+                      {% if d.expected_enabled is defined and (d.expected_enabled | string) not in ['not-checked', ''] %}
+                        <tr>
+                          <td class="item">{{ label | e }} enabled</td>
+                          <td class="exp">{{ d.expected_enabled | e }}</td>
+                          <td class="act">{{ d.actual_enabled | default('—') | e }}</td>
+                        </tr>
+                      {% endif %}
+                      {% if d.expected_rc is defined and (d.expected_rc | string) != (d.actual_rc | default('') | string) %}
+                        <tr>
+                          <td class="item">{{ label | e }}</td>
+                          <td class="exp">rc {{ d.expected_rc | e }}</td>
+                          <td class="act">rc {{ d.actual_rc | default('—') | e }}</td>
+                        </tr>
+                      {% endif %}
+                      {% if d.expected_regex is defined and (d.expected_regex | string | length > 0) %}
+                        <tr>
+                          <td class="item">{{ label | e }} output</td>
+                          <td class="exp">{{ d.expected_regex | e }}</td>
+                          <td class="act">{{ (d.stdout | default(d.stderr | default('—')) | trim)[:80] | e }}</td>
+                        </tr>
+                      {% endif %}
+                      {% if d.expected_status is defined %}
+                        {% if (d.expected_status | string) != (d.actual_status | default('') | string) %}
+                          <tr>
+                            <td class="item">{{ label | e }}</td>
+                            <td class="exp">{{ d.expected_status | e }}</td>
+                            <td class="act">{{ d.actual_status | default('—') | e }}</td>
+                          </tr>
+                        {% endif %}
+                        {% if d.error | default('') | length > 0 and (d.expected_status | string) == (d.actual_status | default('') | string) %}
+                          <tr>
+                            <td class="item">{{ label | e }} body</td>
+                            <td class="exp">match</td>
+                            <td class="act">{{ d.error | e }}</td>
+                          </tr>
+                        {% endif %}
+                      {% endif %}
+                      {% if d.expected_state is not defined and d.expected_rc is not defined and d.expected_status is not defined and d.error | default('') | length > 0 %}
+                        <tr>
+                          <td class="item">{{ label | e }}</td>
+                          <td class="exp">—</td>
+                          <td class="act">{{ d.error | e }}</td>
+                        </tr>
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+
+            {% set rem_attempted = c.remediate_attempted | default(false) | bool %}
+            {% set rem_ok = rem_attempted and (c.remediate_success | default(false) | bool) %}
+            <div class="remediation {{ 'ok' if rem_ok else ('bad' if rem_attempted else '') }}">
+              <div class="remediation-head">
+                <div class="label">Remediation</div>
+                {% if rem_attempted %}
+                  <span class="pill {{ 'ok' if rem_ok else 'fix' }}">
+                    {{ 'Succeeded' if rem_ok else 'Failed' }}
+                  </span>
+                {% else %}
+                  <span class="pill muted">Not attempted</span>
+                {% endif %}
+              </div>
+              {% if rem_attempted and (c.remediate_msg | default('') | length > 0) %}
+                <div class="detail">{{ c.remediate_msg | e }}</div>
+              {% endif %}
+              {% if rem_attempted and (c.remediate_error | default('') | length > 0) %}
+                <div class="detail err">{{ c.remediate_error | e }}</div>
+              {% endif %}
+            </div>
+          </article>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+
+    <footer>Generated by expector · {{ playbook_dir | e }}</footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,134 @@
+---
+# Expector checklist runner.
+#
+# Usage:
+#   ansible-playbook expector.yml
+#   ansible-playbook expector.yml -e expector_remediate=false
+#   ansible-playbook expector.yml -e checklist_file=/path/to/checklist.yml
+#
+# Settings:
+#   Config: settings.yml
+#   Other:  -e settings_file=/path/to/settings.yml
+#
+# Reports (HTML + JSON), names from expector_report_file_prefix / expector_json_file_prefix:
+#   reports/<prefix>.html                        (latest full HTML report)
+#   reports/<prefix>-<timestamp>.html            (HTML archive)
+#   reports/<prefix>.json                        (latest structured JSON report)
+#   reports/<prefix>-<timestamp>.json            (JSON archive)
+#   reports/<prefix>-errors.html                 (latest errors only; omitted when all checks pass)
+#   reports/<prefix>-errors-<timestamp>.html     (errors archive)
+#
+# Report history:
+#   expector_report_keep in settings.yml (keep last N timestamped runs; all / -1 = unlimited)
+#
+# Reachability:
+#   All inventory hosts are pinged before any check. Unreachable hosts are
+#   excluded from the checklist and reported with error_flag: UNREACHABLE.
+#
+# Notifications:
+#   Config: settings.yml (notificators + notifications)
+#   Skip:   --skip-tags notify   or   expector_notify: false
+#
+# Adding a check type:
+#   1. Create tasks/checks/<type>.yml with Verify, Remediate, and Report sections.
+#   2. The file must set check_success, check_msg, check_error (and optional
+#      _check_details / _remediate_* facts) then include _report.yml.
+#   3. Reference the new type from checklist.yml. No other playbook changes are required.
+
+- name: Load checklist and compile host-check map
+  hosts: localhost
+  gather_facts: false
+  vars:
+    settings_file: "{{ playbook_dir }}/settings.yml"
+  tasks:
+    - name: Load settings
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/load_settings.yml"
+
+    - name: Load checklist
+      ansible.builtin.include_vars:
+        file: "{{ checklist_file }}"
+
+    - name: Fail when the checklist is missing or empty
+      ansible.builtin.assert:
+        that:
+          - checklist is defined
+          - checklist | length > 0
+        fail_msg: "No checklist found in {{ checklist_file }}"
+
+    - name: Compile host-to-check mapping
+      ansible.builtin.include_tasks: tasks/compile_host_checks.yml
+
+    - name: Display compiled host-check map
+      ansible.builtin.debug:
+        var: host_check_map
+
+
+- name: Check host reachability
+  hosts: all
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Probe hosts
+      ansible.builtin.include_tasks: tasks/reachability.yml
+
+
+- name: Record unreachable hosts
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Build unreachable host reports
+      ansible.builtin.include_tasks: tasks/record_unreachable.yml
+
+
+- name: Run checklist
+  hosts: expector_reachable
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    settings_file: "{{ playbook_dir }}/settings.yml"
+  tasks:
+    - name: Load settings
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/load_settings.yml"
+
+    - name: Load checklist
+      ansible.builtin.include_vars:
+        file: "{{ checklist_file }}"
+
+    - name: Initialize per-host result list
+      ansible.builtin.set_fact:
+        host_check_results: []
+
+    - name: Run each checklist item in order
+      ansible.builtin.include_tasks: tasks/run_check.yml
+      loop: "{{ checklist }}"
+      loop_control:
+        loop_var: current_check
+        index_var: check_index
+        label: "{{ current_check.name | default('unnamed') }} [{{ current_check.type | default('unknown') }}]"
+
+
+- name: Generate report
+  hosts: localhost
+  gather_facts: false
+  vars:
+    settings_file: "{{ playbook_dir }}/settings.yml"
+  tasks:
+    - name: Load settings
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/load_settings.yml"
+
+    - name: Build consolidated report
+      ansible.builtin.include_tasks: tasks/report.yml
+
+
+- name: Send notifications
+  hosts: localhost
+  gather_facts: false
+  tags: [notify]
+  vars:
+    settings_file: "{{ playbook_dir }}/settings.yml"
+  tasks:
+    - name: Load settings
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/load_settings.yml"
+
+    - name: Dispatch notification systems
+      ansible.builtin.include_tasks: tasks/notify.yml

@@ -1,0 +1,133 @@
+---
+# check type: api
+# Spec: api[] with url, method, expected_status, expected_body[{key,value}]
+# Remediate: not applicable
+
+- name: API | Verify
+  block:
+    - name: API | Verify | Normalize API list
+      ansible.builtin.set_fact:
+        _api_items: "{{ current_check.api if current_check.api is defined else ([current_check] if current_check.url is defined else []) }}"
+
+    - name: API | Verify | Require API entries
+      when: _api_items | length == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default('api') }}' is missing required field 'api'"
+        check_error: "Required field 'api' (or 'url') is missing or empty"
+
+    - name: API | Verify | Call listed URLs
+      when: not (_spec_invalid | bool)
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        method: "{{ item.method | default('GET') }}"
+        return_content: true
+        validate_certs: "{{ item.validate_certs | default(current_check.validate_certs | default(false)) }}"
+        timeout: "{{ item.timeout | default(30) }}"
+        headers: "{{ item.headers | default({}) }}"
+        body: "{{ item.body if (item.body | default('') | string | length > 0) else omit }}"
+        body_format: "{{ item.body_format if (item.body_format | default('') | string | length > 0) else omit }}"
+        url_username: "{{ item.url_username if (item.url_username | default('') | string | length > 0) else (current_check.url_username if (current_check.url_username | default('') | string | length > 0) else omit) }}"
+        url_password: "{{ item.url_password if (item.url_password | default('') | string | length > 0) else (current_check.url_password if (current_check.url_password | default('') | string | length > 0) else omit) }}"
+        force_basic_auth: "{{ item.force_basic_auth | default(false) }}"
+        follow_redirects: "{{ item.follow_redirects | default('safe') }}"
+        status_code: [100, 101, 200, 201, 202, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 408, 409, 429, 500, 501, 502, 503, 504]
+      loop: "{{ _api_items }}"
+      loop_control:
+        label: "{{ item.method | default('GET') }} {{ item.url }}"
+      register: _api_results
+      failed_when: false
+      changed_when: false
+
+    - name: API | Verify | Evaluate each API result
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _check_details: "{{ _check_details + [_api_result] }}"
+      loop: "{{ _api_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.url | default('missing-url') }}"
+      vars:
+        _url: "{{ item.item.url | default('') }}"
+        _expected_status: "{{ item.item.expected_status | default(200) | int }}"
+        _actual_status: "{{ item.status | default(-1) | int }}"
+        _status_ok: "{{ not (item.failed | default(false) | bool) and (_actual_status | int == _expected_status | int) }}"
+        _body_spec: "{{ item.item.expected_body | default([]) }}"
+        _method: "{{ item.item.method | default('GET') }}"
+        _body_eval: "{{ _body_comparison }}"
+        _body_comparison: >-
+          {%- set ns = namespace(ok=true, errors=[], mismatches=[]) -%}
+          {%- if item.failed | default(false) | bool -%}
+            {%- set ns.ok = false -%}
+            {%- set ns.errors = ns.errors + [item.msg | default('API request failed')] -%}
+          {%- elif _body_spec | length == 0 -%}
+            {%- set ns.ok = true -%}
+          {%- elif item.json is not defined -%}
+            {%- set ns.ok = false -%}
+            {%- set ns.errors = ns.errors + ['response is not JSON; cannot compare expected_body'] -%}
+            {%- set ns.mismatches = ns.mismatches + [{'kind': 'body', 'key': 'body', 'url': _url, 'method': _method, 'expected': 'JSON object', 'actual': 'response is not JSON'}] -%}
+          {%- else -%}
+            {%- set pairs = _body_spec if (_body_spec is sequence and _body_spec is not mapping and _body_spec is not string) else _body_spec | dict2items -%}
+            {%- for exp in pairs -%}
+              {%- set key = exp.key if exp.key is defined else exp -%}
+              {%- set expected = exp.value if exp.value is defined else '' -%}
+              {%- set walk = namespace(cur=item.json, missing=false) -%}
+              {%- for part in (key | string).split('.') -%}
+                {%- if walk.missing -%}
+                {%- elif walk.cur is mapping and part in walk.cur -%}
+                  {%- set walk.cur = walk.cur[part] -%}
+                {%- else -%}
+                  {%- set walk.missing = true -%}
+                  {%- set walk.cur = none -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if walk.missing -%}
+                {%- set ns.ok = false -%}
+                {%- set ns.errors = ns.errors + [key ~ ' is missing from the response'] -%}
+                {%- set ns.mismatches = ns.mismatches + [{'kind': 'body', 'key': key | string, 'url': _url, 'method': _method, 'expected': expected | string, 'actual': '(missing)'}] -%}
+              {%- elif not (walk.cur == expected or (walk.cur | string) == (expected | string)) -%}
+                {%- set ns.ok = false -%}
+                {%- set ns.errors = ns.errors + [key ~ ': actual=' ~ (walk.cur | string) ~ ' expected=' ~ (expected | string)] -%}
+                {%- set ns.mismatches = ns.mismatches + [{'kind': 'body', 'key': key | string, 'url': _url, 'method': _method, 'expected': expected | string, 'actual': walk.cur | string}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {{ {'ok': ns.ok, 'errors': ns.errors, 'mismatches': ns.mismatches} }}
+        _ok: "{{ (_status_ok | bool) and (_body_eval.ok | bool) }}"
+        _error: "{{ _error_parts | reject('equalto', '') | list | join('; ') }}"
+        _error_parts:
+          - "{{ item.msg | default('') if (item.failed | default(false) | bool) else '' }}"
+          - "{{ '' if (_status_ok | bool) else ('status=' ~ (_actual_status | string) ~ ' (expected ' ~ (_expected_status | string) ~ ')') }}"
+          - "{{ _body_eval.errors | default([]) | join('; ') }}"
+        _request_mismatches: "{{ [{'kind': 'request', 'key': 'request', 'url': _url, 'method': _method, 'expected': 'success', 'actual': (item.msg | default('API request failed'))}] if (item.failed | default(false) | bool) else [] }}"
+        _status_mismatches: "{{ [{'kind': 'status', 'key': 'status', 'url': _url, 'method': _method, 'expected': (_expected_status | string), 'actual': (_actual_status | string)}] if (not (item.failed | default(false) | bool) and not (_status_ok | bool)) else [] }}"
+        _mismatches: "{{ _request_mismatches + _status_mismatches + (_body_eval.mismatches | default([])) }}"
+        _api_result: "{{ {'url': _url, 'method': _method, 'expected_status': _expected_status | int, 'actual_status': _actual_status | int, 'result': ('pass' if (_ok | bool) else 'fail'), 'error': ('' if (_ok | bool) else ((_url ~ ': ' ~ _error) if (_error | length > 0) else (_url ~ ': API check failed'))), 'mismatches': _mismatches} }}"
+
+    - name: API | Verify | Set check status
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        check_success: "{{ _api_failures | length == 0 }}"
+        check_msg: "{{ 'All ' ~ (_check_details | length | string) ~ ' API calls matched expected status/body' if (_api_failures | length == 0) else ((_api_failures | length | string) ~ ' of ' ~ (_check_details | length | string) ~ ' API calls failed') }}"
+        check_error: "{{ _api_failures | map(attribute='error') | reject('eq', '') | list | join('; ') }}"
+      vars:
+        _api_failures: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+
+  rescue:
+    - name: API | Verify | Capture unexpected error
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "API verification raised an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: API | Remediate
+  when: _do_remediate | bool
+  ansible.builtin.set_fact:
+    _remediate_attempted: false
+    _remediate_success: false
+    _remediate_msg: "No remediation is available for check type 'api'"
+    _remediate_error: ""
+
+- name: API | Report
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/checks/_report.yml"

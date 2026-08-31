@@ -1,0 +1,93 @@
+checklist:
+
+  - name: My Services check
+    type: services
+    hosts: group2
+    report: true
+    remediate: true
+    become: false
+    user_service: true
+    service_user: ""
+    expected_state: running
+    expected_enabled: true
+    services:
+      - nginx
+      - mysql
+      - php-fpm
+
+
+  - name: My Containers check
+    type: podman_containers
+    hosts: group2
+    report: true
+    remediate: true
+    become: false
+    podman_user: ""
+    expected_state: running
+    containers:
+      - webapp
+      - mysql
+
+  - name: My podman secrets check
+    type: podman_secrets
+    hosts: group2
+    report: true
+    remediate: false
+    become: false
+    podman_user: ""
+    expected_state: present
+    secrets:
+      - my_secret
+      - my_secret2
+
+  - name: My podman volumes check
+    type: podman_volumes
+    hosts: group2
+    report: true
+    remediate: false
+    become: false
+    podman_user: ""
+    expected_state: present
+    volumes:
+      - my_nginx
+      - my_data
+
+  - name: My command check
+    type: command
+    hosts: group2
+    report: true
+    remediate: true
+    become: false
+    remediation_command: ""
+    commands:
+      - command: ls -1 /tmp/test
+        expected_rc: 0
+        # expected_regex: "^tes.*"
+        remediation_command: "touch /tmp/test"
+
+  - name: My API check
+    type: api
+    hosts: localhost
+    report: true
+    remediate: false
+    validate_certs: false
+    url_username: ""
+    url_password: ""
+    api:
+      - url: https://my-machine1.example.com/api/v1/ping/
+        method: GET
+        expected_status: 200
+        timeout: 30
+        validate_certs: false
+        headers: {}
+        body: ""
+        body_format: ""
+        url_username: ""
+        url_password: ""
+        force_basic_auth: false
+        follow_redirects: safe
+        expected_body:
+          - key: status
+            value: good
+          - key: db_connected
+            value: true

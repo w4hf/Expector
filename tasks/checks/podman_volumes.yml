@@ -1,0 +1,132 @@
+---
+# check type: podman_volumes
+# Spec: volumes[], expected_state (present|absent)
+# Optional: podman_user, become (default false — rootless podman)
+# Lists names with: podman volume ls --format '{{.Name}}'
+# Remediate: not applicable
+
+- name: Podman volumes | Initialize
+  ansible.builtin.set_fact:
+    _podman_become: "{{ current_check.become | default(_podman_user | length > 0) | bool }}"
+    _podman_env: {}
+  vars:
+    _podman_user: "{{ current_check.podman_user | default('') | string | trim }}"
+
+- name: Podman volumes | Verify
+  block:
+    - name: Podman volumes | Verify | Require a volumes list
+      when: current_check.volumes is not defined or current_check.volumes | length == 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default('podman_volumes') }}' is missing required field 'volumes'"
+        check_error: "Required field 'volumes' is missing or empty"
+
+    - name: Podman volumes | Verify | Resolve podman user runtime
+      when:
+        - current_check.podman_user | default('') | string | trim | length > 0
+        - not (_spec_invalid | bool)
+      block:
+        - name: Podman volumes | Verify | Get podman user UID
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: _podman_uid
+          changed_when: false
+          become: true
+          become_user: "{{ current_check.podman_user }}"
+
+        - name: Podman volumes | Verify | Set rootless podman environment
+          ansible.builtin.set_fact:
+            _podman_env:
+              XDG_RUNTIME_DIR: "/run/user/{{ _podman_uid.stdout | trim }}"
+              DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ _podman_uid.stdout | trim }}/bus"
+
+    - name: Podman volumes | Verify | List volume names
+      when: not (_spec_invalid | bool)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - volume
+          - ls
+          - --format
+          - "{% raw %}{{.Name}}{% endraw %}"
+      register: _podman_volume_ls
+      failed_when: false
+      changed_when: false
+      become: "{{ _podman_become }}"
+      become_user: "{{ current_check.podman_user if (current_check.podman_user | default('') | string | trim | length > 0) else omit }}"
+      environment: "{{ _podman_env }}"
+
+    - name: Podman volumes | Verify | Handle list failure
+      when:
+        - not (_spec_invalid | bool)
+        - _podman_volume_ls.rc | default(1) | int != 0
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "Failed to list podman volumes"
+        check_error: "{{ _podman_volume_ls.stderr | default(_podman_volume_ls.msg | default('podman volume ls failed')) | trim }}"
+
+    - name: Podman volumes | Verify | Parse volume names
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _podman_volume_names: "{{ (_podman_volume_ls.stdout | default('')).splitlines() | map('trim') | reject('equalto', '') | reject('equalto', 'NAME') | reject('equalto', 'VOLUME NAME') | list }}"
+
+    - name: Podman volumes | Verify | Fail clearly when podman returned no volumes
+      when:
+        - not (_spec_invalid | bool)
+        - (_podman_volume_names | default([]) | length) == 0
+        - (current_check.expected_state | default('present')) == 'present'
+      ansible.builtin.set_fact:
+        _spec_invalid: true
+        check_success: false
+        check_msg: "podman volume ls returned no volumes"
+        check_error: "No volumes were listed. The check runs as the connecting user by default; set become: true for rootful podman, or podman_user: <name> for another user's rootless containers."
+
+    - name: Podman volumes | Verify | Evaluate each volume
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        _check_details: "{{ _check_details + [_vol_result] }}"
+      loop: "{{ current_check.volumes | default([]) }}"
+      loop_control:
+        label: "{{ item | trim }}"
+      vars:
+        _name: "{{ item | trim }}"
+        _expected_state: "{{ current_check.expected_state | default('present') }}"
+        _exists: "{{ _name in (_podman_volume_names | default([])) }}"
+        _ok: "{{ (_expected_state == 'present' and (_exists | bool)) or (_expected_state == 'absent' and not (_exists | bool)) }}"
+        _actual_state: "{{ 'present' if (_exists | bool) else 'absent' }}"
+        _vol_result:
+          name: "{{ _name }}"
+          expected_state: "{{ _expected_state }}"
+          actual_state: "{{ _actual_state }}"
+          result: "{{ 'pass' if (_ok | bool) else 'fail' }}"
+          error: "{{ '' if (_ok | bool) else (_name ~ ': ' ~ _actual_state ~ ' (expected ' ~ _expected_state ~ ')') }}"
+
+    - name: Podman volumes | Verify | Set check status
+      when: not (_spec_invalid | bool)
+      ansible.builtin.set_fact:
+        check_success: "{{ _vol_failures | length == 0 }}"
+        check_msg: "{{ 'All ' ~ (_check_details | length | string) ~ ' volumes match expected state' if (_vol_failures | length == 0) else ((_vol_failures | length | string) ~ ' of ' ~ (_check_details | length | string) ~ ' volumes are not in the expected state') }}"
+        check_error: "{{ _vol_failures | map(attribute='error') | reject('equalto', '') | list | join('; ') }}"
+      vars:
+        _vol_failures: "{{ _check_details | selectattr('result', 'equalto', 'fail') | list }}"
+
+  rescue:
+    - name: Podman volumes | Verify | Capture unexpected error
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "Podman volume verification raised an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+- name: Podman volumes | Remediate
+  when: _do_remediate | bool
+  ansible.builtin.set_fact:
+    _remediate_attempted: false
+    _remediate_success: false
+    _remediate_msg: "No remediation is available for check type 'podman_volumes'"
+    _remediate_error: ""
+
+- name: Podman volumes | Report
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/checks/_report.yml"

@@ -1,0 +1,172 @@
+---
+# Send one email message (errors_report or full_report).
+# Expects _email_kind, _email_msg, _email_smtp on the caller.
+
+- name: Email | {{ _email_kind }} | Evaluate trigger
+  ansible.builtin.set_fact:
+    _email_on_list: "{{ _on | map('trim') | map('lower') | select('ne', '') | list }}"
+  vars:
+    _raw: "{{ _email_msg.notify_on | default(current_notify.notify_on | default(notification_defaults.notify_on | default('failed'))) }}"
+    _on: "{{ (_raw if (_raw is sequence and _raw is not string) else [_raw]) }}"
+
+- name: Email | {{ _email_kind }} | Match notify_on
+  ansible.builtin.set_fact:
+    _email_should_send: "{{ ('never' not in _email_on_list) and (('always' in _email_on_list) or ('failed' in _email_on_list and (_notify_failed | bool)) or ('passed' in _email_on_list and (_notify_passed | bool)) or ('remediated' in _email_on_list and (_notify_remediated | bool))) }}"
+
+- name: Email | {{ _email_kind }} | Skip unmatched notify_on
+  when: not (_email_should_send | bool)
+  ansible.builtin.debug:
+    msg: "Email '{{ current_notify.name | default('email') }}' {{ _email_kind }} skipped (notify_on={{ _email_on_list | join(',') }})"
+
+- name: Email | {{ _email_kind }} | Normalize recipients
+  when: _email_should_send | bool
+  ansible.builtin.set_fact:
+    _email_to: "{{ _to }}"
+    _email_cc: "{{ _cc }}"
+    _email_bcc: "{{ _bcc }}"
+  vars:
+    _to_raw: "{{ _email_msg.to | default(_email_msg.recipients | default([])) }}"
+    _to: "{{ (_to_raw if (_to_raw is sequence and _to_raw is not string) else (_to_raw | string | split(','))) | map('trim') | select('ne', '') | list }}"
+    _cc_raw: "{{ _email_msg.cc | default([]) }}"
+    _cc: "{{ (_cc_raw if (_cc_raw is sequence and _cc_raw is not string) else (_cc_raw | string | split(','))) | map('trim') | select('ne', '') | list }}"
+    _bcc_raw: "{{ _email_msg.bcc | default([]) }}"
+    _bcc: "{{ (_bcc_raw if (_bcc_raw is sequence and _bcc_raw is not string) else (_bcc_raw | string | split(','))) | map('trim') | select('ne', '') | list }}"
+
+- name: Email | {{ _email_kind }} | Skip when recipients are missing
+  when:
+    - _email_should_send | bool
+    - (_email_to | default([]) | length) == 0
+  ansible.builtin.debug:
+    msg: "Email '{{ current_notify.name | default('email') }}' {{ _email_kind }} skipped: 'to' is empty"
+
+- name: Email | {{ _email_kind }} | Send
+  when:
+    - _email_should_send | bool
+    - (_email_to | default([]) | length) > 0
+  block:
+    - name: Email | {{ _email_kind }} | Build events
+      ansible.builtin.set_fact:
+        _notify_events: "{{ _events }}"
+      vars:
+        _events: >-
+          {%- set ns = namespace(items=[]) -%}
+          {%- set want_failed = ('failed' in _email_on_list or 'always' in _email_on_list) -%}
+          {%- set want_remediated = ('remediated' in _email_on_list) -%}
+          {%- for host, checks in (check_results_by_host | default({})).items() -%}
+            {%- for c in checks -%}
+              {%- set failed = not (c.check_success | bool) -%}
+              {%- set remediated = c.remediate_attempted | default(false) | bool -%}
+              {%- if (want_failed and failed) or (want_remediated and remediated) -%}
+                {%- set ns.items = ns.items + [{'host': host, 'check': c}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.items }}
+
+    - name: Email | {{ _email_kind }} | Render body and subject
+      ansible.builtin.set_fact:
+        _email_body: "{{ _resolved_body }}"
+        _email_subject: "{{ _subject if (_subject | length > 0) else _auto_subject }}"
+        _email_headers: "{{ _headers }}"
+        _email_attach_candidates: "{{ _attach }}"
+        _email_subtype: "{{ _subtype }}"
+        _email_charset: "{{ _charset }}"
+      no_log: true
+      vars:
+        _subtype: "{{ _email_msg.subtype | default(current_notify.subtype | default('html')) | string | trim | lower }}"
+        _charset: "{{ _email_msg.charset | default(current_notify.charset | default('utf-8')) }}"
+        _body_cfg: "{{ _email_msg.body | default('') | string | trim }}"
+        _default_template: "{{ playbook_dir }}/templates/notify/{{ ('email-full.html.j2' if _subtype == 'html' else 'email-full.txt.j2') if (_email_kind == 'full_report') else ('email.html.j2' if _subtype == 'html' else 'email.txt.j2') }}"
+        _body_path: "{{ _body_cfg if (_body_cfg.startswith('/') or _body_cfg.startswith(playbook_dir)) else (playbook_dir ~ '/' ~ _body_cfg) }}"
+        _resolved_body: >-
+          {%- if _body_cfg | length == 0 -%}
+            {{ lookup('template', _default_template) }}
+          {%- elif _body_cfg in ['report', 'full_report'] and (expector_report_file | default('') | length > 0) -%}
+            {{ lookup('file', expector_report_file) }}
+          {%- elif _body_cfg in ['errors', 'errors_report'] and (expector_errors_file | default('') | length > 0) -%}
+            {{ lookup('file', expector_errors_file) }}
+          {%- elif _body_cfg.endswith('.j2') -%}
+            {{ lookup('template', _body_path) }}
+          {%- else -%}
+            {{ _body_cfg }}
+          {%- endif -%}
+        _subject: "{{ _email_msg.subject | default('') | string | trim }}"
+        _failed_n: "{{ check_summary.checks_failed | default(0) | int }}"
+        _auto_errors: "{{ 'Expector: ' ~ _failed_n ~ ' failure' ~ ('' if (_failed_n | int) == 1 else 's') if (_notify_failed | bool) else ('Expector: remediation executed' if (_notify_remediated | bool) else 'Expector: all checks passed') }}"
+        _auto_full: "{{ 'Expector: full report' ~ (' — ' ~ _failed_n ~ ' failure' ~ ('' if (_failed_n | int) == 1 else 's') if (_notify_failed | bool) else '') }}"
+        _auto_subject: "{{ _auto_full if (_email_kind == 'full_report') else _auto_errors }}"
+        _reply: "{{ _email_msg.reply_to | default('') | string | trim }}"
+        _headers_raw: "{{ _email_msg.headers | default(current_notify.headers | default([])) }}"
+        _headers_list: "{{ _headers_raw if (_headers_raw is sequence and _headers_raw is not string) else ([_headers_raw] if (_headers_raw | string | trim | length > 0) else []) }}"
+        _headers: "{{ _headers_list + (['Reply-To=' ~ _reply] if _reply | length > 0 else []) }}"
+        _extra_raw: "{{ _email_msg.attach | default(current_notify.attach | default([])) }}"
+        _extra: "{{ (_extra_raw if (_extra_raw is sequence and _extra_raw is not string) else ([_extra_raw] if (_extra_raw | string | trim | length > 0) else [])) }}"
+        _want_report: "{{ _email_msg.attach_report | default(_email_kind == 'full_report') | bool }}"
+        _want_errors: "{{ _email_msg.attach_errors_report | default(_email_kind == 'errors_report') | bool }}"
+        _report: "{{ [expector_report_file] if ((_want_report | bool) and (expector_report_file | default('') | length > 0)) else [] }}"
+        _errors: "{{ [expector_errors_file] if ((_want_errors | bool) and (_notify_failed | bool) and (expector_errors_file | default('') | length > 0)) else [] }}"
+        _attach: "{{ (_report + _errors + _extra) | unique | list }}"
+
+    - name: Email | {{ _email_kind }} | Keep existing attachment files
+      when: _email_attach_candidates | length > 0
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: _email_attach_stat
+      loop: "{{ _email_attach_candidates }}"
+
+    - name: Email | {{ _email_kind }} | Set attachments
+      ansible.builtin.set_fact:
+        _email_attach: "{{ _kept }}"
+      vars:
+        _kept: >-
+          {%- set ns = namespace(paths=[]) -%}
+          {%- if (_email_attach_candidates | length > 0) -%}
+            {%- for r in (_email_attach_stat.results | default([])) -%}
+              {%- if r.stat.exists | default(false) | bool -%}
+                {%- set ns.paths = ns.paths + [r.item] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {{ ns.paths }}
+
+    - name: Email | {{ _email_kind }} | Send message
+      community.general.mail:
+        host: "{{ _smtp_host }}"
+        port: "{{ _email_smtp.smtp_port | default(_email_smtp.port | default(587), true) | int }}"
+        username: "{{ _smtp_username if _smtp_username | length > 0 else omit }}"
+        password: "{{ _smtp_password if _smtp_password | length > 0 else omit }}"
+        secure: "{{ _smtp_secure if _smtp_secure | length > 0 else omit }}"
+        timeout: "{{ _email_smtp.smtp_timeout | default(_email_smtp.timeout | default(20), true) | int }}"
+        ehlohost: "{{ _smtp_ehlohost if _smtp_ehlohost | length > 0 else omit }}"
+        sender: "{{ _smtp_sender if _smtp_sender | length > 0 else omit }}"
+        to: "{{ _email_to }}"
+        cc: "{{ _email_cc if _email_cc | length > 0 else omit }}"
+        bcc: "{{ _email_bcc if _email_bcc | length > 0 else omit }}"
+        subject: "{{ _email_subject }}"
+        body: "{{ _email_body }}"
+        subtype: "{{ _email_subtype }}"
+        charset: "{{ _email_charset }}"
+        headers: "{{ _email_headers if _email_headers | length > 0 else omit }}"
+        attach: "{{ _email_attach if _email_attach | length > 0 else omit }}"
+        message_id_domain: "{{ _smtp_mid if _smtp_mid | length > 0 else omit }}"
+        inline: "{{ _smtp_inline if _smtp_inline | length > 0 else omit }}"
+      vars:
+        _smtp_host: "{{ _email_smtp.smtp_host | default(_email_smtp.host | default('')) | string | trim }}"
+        _smtp_username: "{{ _email_smtp.smtp_username | default(_email_smtp.username | default('')) | string | trim }}"
+        _smtp_password: "{{ _email_smtp.smtp_password | default(_email_smtp.password | default('')) | string }}"
+        _smtp_secure: "{{ _email_smtp.smtp_secure | default(_email_smtp.secure | default('starttls')) | string | trim }}"
+        _smtp_ehlohost: "{{ _email_smtp.smtp_ehlohost | default(_email_smtp.ehlohost | default('')) | string | trim }}"
+        _smtp_sender: "{{ _email_msg.from | default(_email_msg.sender | default(_email_smtp.from | default(_email_smtp.sender | default('')))) | string | trim }}"
+        _smtp_mid: "{{ _email_msg.message_id_domain | default(_email_smtp.message_id_domain | default('')) | string | trim }}"
+        _smtp_inline: "{{ _email_msg.inline | default(current_notify.inline | default([])) }}"
+      no_log: true
+      delegate_to: localhost
+
+    - name: Email | {{ _email_kind }} | Confirm send
+      ansible.builtin.debug:
+        msg: "Sent email '{{ current_notify.name | default('email') }}' {{ _email_kind }} to {{ _email_to | join(', ') }} (subject: {{ _email_subject }})"
+
+  rescue:
+    - name: Email | {{ _email_kind }} | Capture send failure
+      ansible.builtin.debug:
+        msg: "Email '{{ current_notify.name | default('email') }}' {{ _email_kind }} failed to send. Check SMTP settings in settings.yml (password is not logged)."

@@ -1,0 +1,6 @@
+---
+# Load settings.yml. Extra vars (-e) override keys from this file.
+
+- name: Load settings
+  ansible.builtin.include_vars:
+    file: "{{ settings_file | default(playbook_dir ~ '/settings.yml') }}"

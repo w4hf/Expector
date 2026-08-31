@@ -1,0 +1,73 @@
+---
+# Dispatcher for one notification system. Includes
+# tasks/notify/<type>.yml. Unknown types and send errors are logged
+# and do not abort the play.
+#
+# To add a system, create tasks/notify/<type>.yml and add an entry to
+# settings.yml. No other playbook changes are required.
+
+- name: Determine whether this notification should run
+  ansible.builtin.set_fact:
+    _notify_enabled: "{{ current_notify.enabled | default(notification_defaults.enabled | default(true)) | bool }}"
+    _notify_on_list: "{{ _on | map('trim') | map('lower') | select('ne', '') | list }}"
+    _notify_has_messages: "{{ (current_notify.errors_report is defined) or (current_notify.full_report is defined) }}"
+  vars:
+    _raw: "{{ current_notify.notify_on | default(notification_defaults.notify_on | default('failed')) }}"
+    _on: "{{ (_raw if (_raw is sequence and _raw is not string) else [_raw]) }}"
+
+- name: Evaluate notification trigger
+  ansible.builtin.set_fact:
+    _should_notify: "{{ _enabled and (_has_messages or _match) }}"
+  vars:
+    _enabled: "{{ _notify_enabled | bool }}"
+    _has_messages: "{{ _notify_has_messages | bool }}"
+    _never: "{{ 'never' in (_notify_on_list | default([])) }}"
+    _always: "{{ 'always' in (_notify_on_list | default([])) }}"
+    _match: "{{ (not _never) and (_always or ('failed' in _notify_on_list and (_notify_failed | bool)) or ('passed' in _notify_on_list and (_notify_passed | bool)) or ('remediated' in _notify_on_list and (_notify_remediated | bool))) }}"
+
+- name: Skip disabled or unmatched notification
+  when: not (_should_notify | bool)
+  ansible.builtin.debug:
+    msg: "Notification '{{ current_notify.name | default(current_notify.type | default('unnamed')) }}' skipped (enabled={{ _notify_enabled }} notify_on={{ _notify_on_list | join(',') }})"
+
+- name: Run notification system
+  when: _should_notify | bool
+  block:
+    - name: Build events for this notification
+      ansible.builtin.set_fact:
+        _notify_events: "{{ _events }}"
+      vars:
+        _events: >-
+          {%- set ns = namespace(items=[]) -%}
+          {%- set want_failed = ('failed' in _notify_on_list or 'always' in _notify_on_list) -%}
+          {%- set want_remediated = ('remediated' in _notify_on_list) -%}
+          {%- for host, checks in (check_results_by_host | default({})).items() -%}
+            {%- for c in checks -%}
+              {%- set failed = not (c.check_success | bool) -%}
+              {%- set remediated = c.remediate_attempted | default(false) | bool -%}
+              {%- if (want_failed and failed) or (want_remediated and remediated) -%}
+                {%- set ns.items = ns.items + [{'host': host, 'check': c}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.items }}
+
+    - name: Resolve notification type task file
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/tasks/notify/{{ current_notify.type | default('missing') }}.yml"
+      register: _notify_type_file
+
+    - name: Handle unknown notification type
+      when: not (_notify_type_file.stat.exists | default(false))
+      ansible.builtin.debug:
+        msg: "Unknown notification type '{{ current_notify.type | default('') }}' (no task file at tasks/notify/{{ current_notify.type | default('missing') }}.yml)"
+
+    - name: Include notification type tasks
+      when: _notify_type_file.stat.exists | default(false)
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/notify/{{ current_notify.type }}.yml"
+
+  rescue:
+    - name: Capture unexpected notification failure
+      ansible.builtin.debug:
+        msg: "Notification '{{ current_notify.name | default(current_notify.type | default('unknown')) }}' failed: {{ ansible_failed_result.msg | default(ansible_failed_result | string) }}"

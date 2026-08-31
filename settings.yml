@@ -1,0 +1,141 @@
+---
+# Expector settings. Loaded by expector.yml on every play that needs them.
+# Extra vars (-e key=value) override anything in this file.
+#
+# Encrypt this file if it contains a real SMTP password:
+#   ansible-vault encrypt settings.yml
+#   ansible-playbook expector.yml --ask-vault-pass
+#
+# Use another file for one run:
+#   ansible-playbook expector.yml -e settings_file=/path/to/other-settings.yml
+
+###############################################################################
+# Paths
+###############################################################################
+
+# Checklist YAML (checks live here, not in this file).
+checklist_file: "{{ playbook_dir }}/checklist.yml"
+
+# Directory for HTML, JSON, and errors reports (latest + timestamped archives).
+expector_report_dir: "{{ playbook_dir }}/reports"
+
+# Filename prefix for HTML reports (full + errors). Timestamp is appended automatically.
+#   <dir>/<prefix>.html
+#   <dir>/<prefix>-<stamp>.html
+#   <dir>/<prefix>-errors.html
+#   <dir>/<prefix>-errors-<stamp>.html
+expector_report_file_prefix: "expector"
+# Filename prefix for JSON reports. Empty → same as expector_report_file_prefix.
+#   <dir>/<prefix>.json
+#   <dir>/<prefix>-<stamp>.json
+expector_json_file_prefix: "expector" 
+
+###############################################################################
+# Checklist run
+###############################################################################
+
+# Override remediation for every check. Empty → honor each check's remediate flag
+# in checklist.yml. true = remediate every check that implements it. false = never.
+expector_remediate: ""
+
+###############################################################################
+# Reports
+###############################################################################
+
+# How many timestamped runs to keep (HTML + JSON + errors from the same run).
+# The stable latest files (<prefix>.html / .json, <prefix>-errors.html)
+# are never deleted. all or -1 = keep every archive. Values below 1 count as 1.
+expector_report_keep: 10
+
+###############################################################################
+# Notifications
+###############################################################################
+
+# Master switch. false skips every notification system (same as --skip-tags notify).
+expector_notify: true
+
+# Used when a notification or message omits enabled / notify_on.
+# notify_on: always | failed | passed | remediated | never  (string or list)
+notification_defaults:
+  enabled: true
+  notify_on:
+    - failed
+    - remediated
+
+# Shared transports. An email notification sets notificator: <name> to pick one.
+# type: smtp (email). Empty strings for username, password, and similar fields
+# are treated as unset (omit) by the mail module.
+notificators:
+  - name: gmail                          # referenced by notifications[].notificator
+    type: smtp                           # smtp
+    smtp_host: ""           # required to send (host is an alias)
+    smtp_port: <TO BE DEFINED>                       # 25 unencrypted, 587 STARTTLS, 465 implicit TLS
+    smtp_username: <TO BE DEFINED>  # SMTP auth user; empty = no auth
+    smtp_password: <TO BE DEFINED>      # SMTP auth password; empty = no auth
+    smtp_secure: <TO BE DEFINED>                # always | never | starttls | try
+    smtp_timeout: <TO BE DEFINED>                     # connection timeout in seconds
+    smtp_ehlohost: <TO BE DEFINED>                    # host name sent in EHLO; empty = module default
+    from: <TO BE DEFINED>     # envelope sender; empty = module default (root)
+    message_id_domain: ""                # domain for Message-ID; empty = module default
+
+# What to send. type must match tasks/notify/<type>.yml.
+# Email messages: errors_report (failure digest) and full_report (opt-in).
+# Each block has its own to / subject / body / notify_on / attachments.
+notifications:
+  - name: Operators email                # label in logs
+    type: email                          # tasks/notify/email.yml
+    notificator: gmail                   # name of an entry in notificators
+    enabled: true                        # per-system switch (default: notification_defaults.enabled)
+    charset: utf-8                       # mail charset
+    headers: []                          # extra headers as Header=value strings
+    inline: []                           # HTML embedded images: [{path, cid, mime_type}]
+    attach: []                           # extra file paths attached to both messages
+
+    errors_report:
+      enabled: true                      # send the errors digest (default true if this block exists)
+      notify_on:                         # when to send this message
+        - failed
+        - remediated
+      to:                                # recipients (list or comma-separated string); required to send
+        - <TO BE DEFINED>
+      cc: []                             # carbon copy
+      bcc: []                            # blind carbon copy
+      reply_to: ""                       # added as a Reply-To header; empty = omitted
+      from: ""                           # per-message sender override; empty = notificator from
+      subject: ""                        # empty → auto (N failure(s) / remediation executed / all checks passed)
+      subtype: html                      # html | plain
+      body: ""                           # empty → templates/notify/email.html.j2 (or .txt.j2 if plain)
+                                         # errors_report → generated errors HTML as the body
+                                         # path ending in .j2 → render that template
+                                         # any other string → literal body
+      attach_errors_report: true         # attach the errors HTML report when it exists
+      attach_report: false               # attach the full HTML report
+      attach: []                         # extra file paths for this message only
+      charset: utf-8                     # override parent charset
+      headers: []                        # override parent headers
+      inline: []                         # override parent inline images
+      message_id_domain: ""              # override notificator Message-ID domain
+
+    full_report:
+      enabled: true                      # set true to also send the full report by email (default false)
+      notify_on:
+        - always                         # send every run (after reports)
+      to:                                # recipients; required to send
+        - <TO BE DEFINED>
+      cc: []                             # carbon copy
+      bcc: []                            # blind carbon copy
+      reply_to: ""                       # added as a Reply-To header; empty = omitted
+      from: ""                           # per-message sender override; empty = notificator from
+      subject: ""                        # empty → auto (Expector: full report)
+      subtype: html                      # html | plain
+      body: ""                           # empty → templates/notify/email-full.html.j2
+                                         # report → generated full HTML report as the body
+                                         # path ending in .j2 → render that template
+                                         # any other string → literal body
+      attach_report: true                # attach the full HTML report
+      attach_errors_report: false        # attach the errors HTML report when it exists
+      attach: []                         # extra file paths for this message only
+      charset: utf-8                     # override parent charset
+      headers: []                        # override parent headers
+      inline: []                         # override parent inline images
+      message_id_domain: ""              # override notificator Message-ID domain

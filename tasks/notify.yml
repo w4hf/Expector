@@ -1,0 +1,59 @@
+---
+# Dispatch notification systems from settings.yml. An empty notifications
+# list or expector_notify=false skips sending. Notification failures do
+# not abort the playbook.
+
+- name: Skip notifications when disabled
+  when: not (expector_notify | default(true) | bool)
+  ansible.builtin.debug:
+    msg: "Notifications skipped: expector_notify=false"
+
+- name: Skip when no notification systems are defined
+  when:
+    - expector_notify | default(true) | bool
+    - (notifications | default([], true)) | length == 0
+  ansible.builtin.debug:
+    msg: "Notifications skipped: 'notifications' is missing or empty"
+
+- name: Skip when check results are not available
+  when:
+    - expector_notify | default(true) | bool
+    - (notifications | default([], true)) | length > 0
+    - check_summary is not defined
+  ansible.builtin.debug:
+    msg: "Notifications skipped: check results are not available on localhost"
+
+- name: Dispatch notification systems
+  when:
+    - expector_notify | default(true) | bool
+    - (notifications | default([], true)) | length > 0
+    - check_summary is defined
+  block:
+    - name: Compute notification outcome flags
+      ansible.builtin.set_fact:
+        _notify_failed: "{{ (check_summary.checks_failed | default(0) | int) > 0 }}"
+        _notify_passed: "{{ (check_summary.checks_failed | default(0) | int) == 0 }}"
+        _notify_remediated: "{{ _outcome.remediated | bool }}"
+        _notify_remediated_count: "{{ _outcome.count | int }}"
+      vars:
+        _outcome: >-
+          {%- set ns = namespace(remediated=false, count=0) -%}
+          {%- for host, checks in (check_results_by_host | default({})).items() -%}
+            {%- for c in checks -%}
+              {%- if c.remediate_attempted | default(false) | bool -%}
+                {%- set ns.remediated = true -%}
+                {%- set ns.count = ns.count + 1 -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ {'remediated': ns.remediated, 'count': ns.count} }}
+
+    - name: Run each notification system
+      when:
+        - notifications is sequence
+        - notifications is not string
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/run_notify.yml"
+      loop: "{{ notifications }}"
+      loop_control:
+        loop_var: current_notify
+        label: "{{ current_notify.name | default(current_notify.type | default('unnamed')) }} [{{ current_notify.type | default('unknown') }}]"

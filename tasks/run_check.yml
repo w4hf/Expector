@@ -1,0 +1,87 @@
+---
+# Dispatcher: skip this host when it is not targeted, otherwise include
+# tasks/checks/<type>.yml. Unknown types and unexpected errors become a failed
+# check_report instead of aborting the play.
+#
+# To add a check type, create tasks/checks/<type>.yml with three sections:
+#   1. Verify  – compare current state to expected state
+#   2. Remediate – optional correction (no-op when not applicable)
+#   3. Report  – include _report.yml after setting check_* / _remediate_* facts
+
+- name: Determine whether this host is targeted by the current check
+  ansible.builtin.set_fact:
+    _host_targeted: "{{ inventory_hostname in _target_names or (group_names | intersect(_target_names) | length > 0) }}"
+    _do_remediate: "{{ (expector_remediate | bool) if ((expector_remediate | default('') | string | length) > 0) else (current_check.remediate | default(false) | bool) }}"
+  vars:
+    _target_names: "{{ (current_check.hosts | map('trim') | list) if (current_check.hosts is defined and current_check.hosts is sequence and current_check.hosts is not string) else ((current_check.hosts | default('') | string | split(',')) | map('trim') | select('ne', '') | list) }}"
+
+- name: Run targeted check
+  when: _host_targeted | bool
+  block:
+    - name: Reset per-check facts
+      ansible.builtin.set_fact:
+        check_report: {}
+        check_success: false
+        check_failed: true
+        check_msg: ""
+        check_error: ""
+        check_unreachable: false
+        error_flag: ""
+        _check_details: []
+        _cmd_eval_details: []
+        _spec_invalid: false
+        _remediate_attempted: false
+        _remediate_success: false
+        _remediate_msg: ""
+        _remediate_error: ""
+
+    - name: Resolve check type task file
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/tasks/checks/{{ current_check.type | default('missing') }}.yml"
+      register: _check_type_file
+      delegate_to: localhost
+      become: false
+
+    - name: Handle unknown check type
+      when: not (_check_type_file.stat.exists | default(false))
+      block:
+        - name: Set unknown-type error
+          ansible.builtin.set_fact:
+            check_success: false
+            check_msg: "Unknown check type '{{ current_check.type | default('') }}'"
+            check_error: "No task file found at tasks/checks/{{ current_check.type | default('missing') }}.yml"
+
+        - name: Report unknown check type
+          ansible.builtin.include_tasks:
+            file: "{{ playbook_dir }}/tasks/checks/_report.yml"
+
+    - name: Include check type tasks
+      when: _check_type_file.stat.exists | default(false)
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/checks/{{ current_check.type }}.yml"
+
+    - name: Build report if the type file did not
+      when: check_report.check_name is not defined
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/checks/_report.yml"
+
+    - name: Append check report to this host's result list
+      ansible.builtin.set_fact:
+        host_check_results: "{{ host_check_results | default([]) + [check_report] }}"
+      when: check_report.check_name is defined
+
+  rescue:
+    - name: Capture unexpected check failure
+      ansible.builtin.set_fact:
+        check_success: false
+        check_msg: "Check '{{ current_check.name | default(current_check.type | default('unknown')) }}' aborted with an unexpected error"
+        check_error: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result | string)) }}"
+
+    - name: Build report for unexpected failure
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/tasks/checks/_report.yml"
+
+    - name: Append unexpected-failure report
+      ansible.builtin.set_fact:
+        host_check_results: "{{ host_check_results | default([]) + [check_report] }}"
+      when: check_report.check_name is defined

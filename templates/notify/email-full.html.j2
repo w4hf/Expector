@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ _email_subject | default('Expector full report') | e }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f2ee;color:#1b1a17;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.45;">
+  <div style="max-width:640px;margin:0 auto;padding:24px 16px 40px;">
+    <h1 style="margin:0 0 4px;font-size:20px;font-weight:600;">Expector full report</h1>
+    <p style="margin:0 0 20px;color:#6e6a63;font-size:13px;">
+      {{ check_summary.hosts_checked | default(0) }} hosts ·
+      {{ check_summary.checks_total | default(0) }} checks ·
+      {{ check_summary.checks_passed | default(0) }} passed ·
+      <span style="color:#a33b32;">{{ check_summary.checks_failed | default(0) }} failed</span>
+      {% if (check_summary.hosts_unreachable | default(0) | int) > 0 %}
+        · <span style="color:#6b3a58;">{{ check_summary.hosts_unreachable }} unreachable</span>
+      {% endif %}
+    </p>
+
+    {% for host, checks in (check_results_by_host | default({})).items() | sort %}
+      {% set ns = namespace(failed=[], unreachable=false) %}
+      {% for c in checks %}
+        {% if not (c.check_success | default(false) | bool) %}
+          {% set ns.failed = ns.failed + [c] %}
+        {% endif %}
+        {% if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %}
+          {% set ns.unreachable = true %}
+        {% endif %}
+      {% endfor %}
+      <div style="margin:0 0 10px;padding:12px 14px;background:#fffcf8;border:1px solid #e6e2d8;border-radius:8px;">
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;">
+          <tr>
+            <td style="font-weight:600;">{{ host | e }}</td>
+            <td style="text-align:right;font-size:13px;color:#6e6a63;">
+              {% if ns.unreachable %}
+                <span style="color:#6b3a58;font-weight:650;">Unreachable</span>
+              {% elif (ns.failed | length) > 0 %}
+                <span style="color:#a33b32;font-weight:650;">{{ ns.failed | length }} failed</span>
+                · {{ (checks | length) - (ns.failed | length) }}/{{ checks | length }} passed
+              {% else %}
+                <span style="color:#2c6b4a;font-weight:650;">All passed</span>
+                · {{ checks | length }} check{{ '' if (checks | length) == 1 else 's' }}
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+        {% if (ns.failed | length) > 0 %}
+          <ul style="margin:8px 0 0;padding:0 0 0 18px;color:#a33b32;font-size:13px;">
+            {% for c in ns.failed %}
+              <li style="margin:0 0 4px;">{{ (c.check_name | default('check')) | e }}{% if c.check_type | default('') | length > 0 %} <span style="color:#6e6a63;">· {{ c.check_type | e }}</span>{% endif %}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% else %}
+      <p style="margin:0;padding:16px;background:#fffcf8;border:1px solid #e6e2d8;border-radius:8px;">No check results.</p>
+    {% endfor %}
+
+    {% if (_email_msg.attach_report | default(_email_kind == 'full_report')) | bool %}
+      <p style="margin:16px 0 0;color:#6e6a63;font-size:13px;">The full HTML report is attached.</p>
+    {% endif %}
+  </div>
+</body>
+</html>

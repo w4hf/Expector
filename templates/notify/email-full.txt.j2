@@ -1,0 +1,24 @@
+Expector full report
+{{ check_summary.hosts_checked | default(0) }} hosts · {{ check_summary.checks_total | default(0) }} checks · {{ check_summary.checks_passed | default(0) }} passed · {{ check_summary.checks_failed | default(0) }} failed{% if (check_summary.hosts_unreachable | default(0) | int) > 0 %} · {{ check_summary.hosts_unreachable }} unreachable{% endif %}
+
+{% for host, checks in (check_results_by_host | default({})).items() | sort %}
+{% set ns = namespace(failed=[], unreachable=false) %}
+{% for c in checks %}
+{% if not (c.check_success | default(false) | bool) %}
+{% set ns.failed = ns.failed + [c] %}
+{% endif %}
+{% if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %}
+{% set ns.unreachable = true %}
+{% endif %}
+{% endfor %}
+{{ host }}{% if ns.unreachable %} [UNREACHABLE]{% elif (ns.failed | length) > 0 %} [{{ ns.failed | length }} failed]{% else %} [all passed]{% endif %}
+{% for c in ns.failed %}
+  - {{ c.check_name | default('check') }}{% if c.check_type | default('') | length > 0 %} [{{ c.check_type }}]{% endif %}
+{% endfor %}
+{% else %}
+No check results.
+{% endfor %}
+{% if (_email_msg.attach_report | default(_email_kind == 'full_report')) | bool %}
+
+The full HTML report is attached.
+{% endif %}

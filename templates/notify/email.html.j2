@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ _email_subject | default('Expector') | e }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f2ee;color:#1b1a17;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.45;">
+  <div style="max-width:640px;margin:0 auto;padding:24px 16px 40px;">
+    <h1 style="margin:0 0 4px;font-size:20px;font-weight:600;">Expector</h1>
+    <p style="margin:0 0 20px;color:#6e6a63;font-size:13px;">
+      {{ check_summary.hosts_checked | default(0) }} hosts ·
+      {{ check_summary.checks_total | default(0) }} checks ·
+      {{ check_summary.checks_passed | default(0) }} passed ·
+      <span style="color:#a33b32;">{{ check_summary.checks_failed | default(0) }} failed</span>
+      {% if (check_summary.hosts_unreachable | default(0) | int) > 0 %}
+        · <span style="color:#6b3a58;">{{ check_summary.hosts_unreachable }} unreachable</span>
+      {% endif %}
+    </p>
+
+    {% if (_notify_events | default([])) | length == 0 %}
+      <p style="margin:0;padding:16px;background:#fffcf8;border:1px solid #e6e2d8;border-radius:8px;">All checks passed.</p>
+    {% else %}
+      {% for ev in _notify_events %}
+        {% set host = ev.host %}
+        {% set c = ev.check %}
+        {% set failed_items = c.details | default([]) | selectattr('result', 'equalto', 'fail') | list %}
+        {% set _failure_msg = (c.check_msg | default('Check failed')) if (failed_items | length > 0) else (c.check_error | default('') if (c.check_error | default('') | length > 0) else c.check_msg | default('Check failed')) %}
+        <div style="margin:0 0 12px;padding:14px 16px;background:#fffcf8;border:1px solid #e6e2d8;border-radius:8px;">
+          <div style="font-weight:600;">{{ host | e }}{% if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') %} · UNREACHABLE{% endif %}</div>
+          {% if c.check_name | default('') | length > 0 %}
+            <div style="margin-top:2px;color:#6e6a63;font-size:13px;">{{ c.check_name | e }}{% if c.check_type | default('') | length > 0 %} · {{ c.check_type | e }}{% endif %}</div>
+          {% endif %}
+          <div style="margin-top:4px;color:#a33b32;">{{ _failure_msg | e }}</div>
+          {% if failed_items | length > 0 %}
+            <table style="width:100%;margin-top:10px;border-collapse:collapse;border:1px solid #e6e2d8;font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:5px 8px;background:#f3f1eb;color:#6e6a63;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">Item</th>
+                  <th style="text-align:left;padding:5px 8px;background:#f3f1eb;color:#6e6a63;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">Expected</th>
+                  <th style="text-align:left;padding:5px 8px;background:#f3f1eb;color:#6e6a63;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">Actual</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for d in failed_items %}
+                  {% if d.mismatches is defined and d.mismatches is sequence and d.mismatches is not string and (d.mismatches | length > 0) %}
+                    {% for m in d.mismatches %}
+                      {% if (m.kind | default('body')) == 'body' %}
+                        <tr>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">
+                            <div style="font-family:monospace;font-weight:600;">{{ m.key | default('body') | e }}</div>
+                            <div style="margin-top:2px;color:#6e6a63;font-size:11px;font-family:monospace;word-break:break-word;">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}</div>
+                          </td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ m.expected | default('') | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ m.actual | default('') | e }}</td>
+                        </tr>
+                      {% elif (m.kind | default('')) == 'status' %}
+                        <tr>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;font-family:monospace;word-break:break-word;">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}<div style="margin-top:2px;color:#6e6a63;font-size:11px;">HTTP status</div></td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ m.expected | default('') | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ m.actual | default('') | e }}</td>
+                        </tr>
+                      {% else %}
+                        <tr>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;font-family:monospace;word-break:break-word;">{{ ((m.method | default(d.method | default('GET'))) ~ ' ' ~ (m.url | default(d.url | default('')))) | trim | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ m.expected | default('') | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ m.actual | default('') | e }}</td>
+                        </tr>
+                      {% endif %}
+                    {% endfor %}
+                  {% else %}
+                    {% set label = d.name | default(d.command | default(d.url | default('item'))) %}
+                    {% if d.expected_state is defined %}
+                      <tr>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ d.expected_state | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ d.actual_state | default('—') | e }}</td>
+                      </tr>
+                    {% endif %}
+                    {% if d.expected_enabled is defined and (d.expected_enabled | string) not in ['not-checked', ''] %}
+                      <tr>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }} enabled</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ d.expected_enabled | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ d.actual_enabled | default('—') | e }}</td>
+                      </tr>
+                    {% endif %}
+                    {% if d.expected_rc is defined and (d.expected_rc | string) != (d.actual_rc | default('') | string) %}
+                      <tr>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">rc {{ d.expected_rc | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">rc {{ d.actual_rc | default('—') | e }}</td>
+                      </tr>
+                    {% endif %}
+                    {% if d.expected_regex is defined and (d.expected_regex | string | length > 0) %}
+                      <tr>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }} output</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ d.expected_regex | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ (d.stdout | default(d.stderr | default('—')) | trim)[:80] | e }}</td>
+                      </tr>
+                    {% endif %}
+                    {% if d.expected_status is defined %}
+                      {% if (d.expected_status | string) != (d.actual_status | default('') | string) %}
+                        <tr>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">{{ d.expected_status | e }}</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ d.actual_status | default('—') | e }}</td>
+                        </tr>
+                      {% endif %}
+                      {% if d.error | default('') | length > 0 and (d.expected_status | string) == (d.actual_status | default('') | string) %}
+                        <tr>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }} body</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">match</td>
+                          <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ d.error | e }}</td>
+                        </tr>
+                      {% endif %}
+                    {% endif %}
+                    {% if d.expected_state is not defined and d.expected_rc is not defined and d.expected_status is not defined and d.error | default('') | length > 0 %}
+                      <tr>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;">{{ label | e }}</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#6e6a63;font-family:monospace;">—</td>
+                        <td style="padding:5px 8px;border-top:1px solid #e6e2d8;color:#a33b32;font-weight:600;font-family:monospace;">{{ d.error | e }}</td>
+                      </tr>
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+          {% set rem_attempted = c.remediate_attempted | default(false) | bool %}
+          {% set rem_ok = rem_attempted and (c.remediate_success | default(false) | bool) %}
+          {% set rem_bg = '#e8f3ec' if rem_ok else ('#f4edd8' if rem_attempted else '#f3f1eb') %}
+          {% set rem_border = '#c8ddcf' if rem_ok else ('#e4d6a8' if rem_attempted else '#e6e2d8') %}
+          {% set rem_label = '#2c6b4a' if rem_ok else ('#6a5420' if rem_attempted else '#6e6a63') %}
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-top:12px;border-collapse:separate;border:1px solid {{ rem_border }};border-radius:8px;background:{{ rem_bg }};">
+            <tr>
+              <td style="padding:10px 12px;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="font-size:11px;font-weight:650;letter-spacing:0.06em;text-transform:uppercase;color:{{ rem_label }};">Remediation</td>
+                    <td style="text-align:right;">
+                      {% if rem_attempted %}
+                        <span style="display:inline-block;padding:4px 10px;border-radius:99px;font-size:11px;font-weight:650;letter-spacing:0.04em;text-transform:uppercase;color:{{ rem_label }};background:#fffcf8;border:1px solid {{ rem_label }};">
+                          {{ 'Succeeded' if rem_ok else 'Failed' }}
+                        </span>
+                      {% else %}
+                        <span style="display:inline-block;padding:4px 10px;border-radius:99px;font-size:11px;font-weight:650;letter-spacing:0.04em;text-transform:uppercase;color:#6e6a63;background:#fffcf8;border:1px solid #c4bfb3;">Not attempted</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                </table>
+                {% if rem_attempted and (c.remediate_msg | default('') | length > 0) %}
+                  <div style="margin-top:6px;font-size:13px;color:#1b1a17;">{{ c.remediate_msg | e }}</div>
+                {% endif %}
+                {% if rem_attempted and (c.remediate_error | default('') | length > 0) %}
+                  <div style="margin-top:6px;font-size:13px;color:#a33b32;word-break:break-word;">{{ c.remediate_error | e }}</div>
+                {% endif %}
+              </td>
+            </tr>
+          </table>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</body>
+</html>

@@ -1,0 +1,11 @@
+localhost ansible_connection=local
+
+[group1]
+my-machine1.example.com
+
+[group2]
+my-machine2.example.com
+my-machine3.example.com
+
+# Populated at runtime after ping. Do not list hosts here.
+[expector_reachable]

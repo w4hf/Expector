@@ -1,0 +1,183 @@
+---
+- name: Initialize consolidated report
+  ansible.builtin.set_fact:
+    check_results_by_host: {}
+
+- name: Collect per-host check results
+  ansible.builtin.set_fact:
+    check_results_by_host: "{{ check_results_by_host | default({}) | combine({item: (hostvars[item]['host_check_results'] | default([]))}) }}"
+  loop: "{{ groups['all'] }}"
+  when: (hostvars[item]['host_check_results'] | default([])) | length > 0
+
+- name: Merge UNREACHABLE host reports
+  when: (expector_unreachable_results | default({})) | length > 0
+  ansible.builtin.set_fact:
+    check_results_by_host: "{{ check_results_by_host | default({}) | combine(expector_unreachable_results) }}"
+
+- name: Build summary
+  ansible.builtin.set_fact:
+    check_summary: "{{ _computed.summary }}"
+    check_failures: "{{ _computed.failures }}"
+  vars:
+    _computed: >-
+      {%- set ns = namespace(total=0, passed=0, failed=0, unreachable=0, failures=[]) -%}
+      {%- for host, checks in (check_results_by_host | default({})).items() -%}
+        {%- set host_unreach = namespace(flag=false) -%}
+        {%- for c in checks -%}
+          {%- set ns.total = ns.total + 1 -%}
+          {%- if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') -%}
+            {%- set host_unreach.flag = true -%}
+          {%- endif -%}
+          {%- if c.check_success | bool -%}
+            {%- set ns.passed = ns.passed + 1 -%}
+          {%- else -%}
+            {%- set ns.failed = ns.failed + 1 -%}
+            {%- set ns.failures = ns.failures + [{'host': host, 'check_name': c.check_name, 'check_error': c.check_error | default(''), 'error_flag': c.error_flag | default('')}] -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- if host_unreach.flag -%}
+          {%- set ns.unreachable = ns.unreachable + 1 -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ {'summary': {'hosts_checked': (check_results_by_host | default({})) | length, 'hosts_unreachable': ns.unreachable, 'checks_total': ns.total, 'checks_passed': ns.passed, 'checks_failed': ns.failed}, 'failures': ns.failures} }}
+
+- name: Display check results by host
+  ansible.builtin.debug:
+    var: check_results_by_host
+
+- name: Display check summary
+  ansible.builtin.debug:
+    var: check_summary
+
+- name: Display failed checks
+  ansible.builtin.debug:
+    var: check_failures
+  when: check_failures | default([]) | length > 0
+
+- name: Build per-host pass/fail counts
+  ansible.builtin.set_fact:
+    check_host_stats: "{{ _host_stats }}"
+    expector_report_generated_at: "{{ now(fmt='%d %b %Y · %H:%M') }}"
+    expector_report_generated_iso: "{{ now(fmt='%Y-%m-%dT%H:%M:%S') }}"
+    expector_report_stamp: "{{ now(fmt='%Y%m%d-%H%M%S') }}"
+  vars:
+    _host_stats: >-
+      {%- set ns = namespace(out={}) -%}
+      {%- for host, checks in (check_results_by_host | default({})).items() -%}
+        {%- set counts = namespace(passed=0, failed=0, unreachable=false) -%}
+        {%- for c in checks -%}
+          {%- if (c.check_unreachable | default(false) | bool) or (c.error_flag | default('') == 'UNREACHABLE') -%}
+            {%- set counts.unreachable = true -%}
+          {%- endif -%}
+          {%- if c.check_success | bool -%}
+            {%- set counts.passed = counts.passed + 1 -%}
+          {%- else -%}
+            {%- set counts.failed = counts.failed + 1 -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- set ns.out = ns.out | combine({host: {'passed': counts.passed, 'failed': counts.failed, 'total': checks | length, 'unreachable': counts.unreachable}}) -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+- name: Resolve report file prefixes
+  ansible.builtin.set_fact:
+    expector_report_dir: "{{ expector_report_dir | default(playbook_dir ~ '/reports') }}"
+    expector_report_file_prefix: "{{ _html if (_html | length > 0) else 'expector' }}"
+    expector_json_file_prefix: "{{ _json if (_json | length > 0) else (_html if (_html | length > 0) else 'expector') }}"
+  vars:
+    _html: "{{ '' if (expector_report_file_prefix is not defined or expector_report_file_prefix is none) else (expector_report_file_prefix | string | trim | basename | regex_replace('\\.(html|htm|json)$', '') | regex_replace('-+$', '')) }}"
+    _json: "{{ '' if (expector_json_file_prefix is not defined or expector_json_file_prefix is none) else (expector_json_file_prefix | string | trim | basename | regex_replace('\\.(html|htm|json)$', '') | regex_replace('-+$', '')) }}"
+
+- name: Set report paths
+  ansible.builtin.set_fact:
+    expector_report_file: "{{ expector_report_dir }}/{{ expector_report_file_prefix }}-{{ expector_report_stamp }}.html"
+    expector_report_latest: "{{ expector_report_dir }}/{{ expector_report_file_prefix }}.html"
+    expector_json_file: "{{ expector_report_dir }}/{{ expector_json_file_prefix }}-{{ expector_report_stamp }}.json"
+    expector_json_latest: "{{ expector_report_dir }}/{{ expector_json_file_prefix }}.json"
+    expector_errors_file: "{{ expector_report_dir }}/{{ expector_report_file_prefix }}-errors-{{ expector_report_stamp }}.html"
+    expector_errors_latest: "{{ expector_report_dir }}/{{ expector_report_file_prefix }}-errors.html"
+
+- name: Ensure reports directory exists
+  ansible.builtin.file:
+    path: "{{ expector_report_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Generate HTML report
+  ansible.builtin.template:
+    src: report.html.j2
+    dest: "{{ expector_report_file }}"
+    mode: "0644"
+
+- name: Write stable latest HTML report
+  ansible.builtin.copy:
+    src: "{{ expector_report_file }}"
+    dest: "{{ expector_report_latest }}"
+    remote_src: true
+    mode: "0644"
+
+- name: Display HTML report path
+  ansible.builtin.debug:
+    msg: "HTML report written to {{ expector_report_file }} (latest: {{ expector_report_latest }})"
+
+- name: Build JSON report document
+  ansible.builtin.set_fact:
+    expector_json_report:
+      generator: expector
+      generated_at: "{{ expector_report_generated_iso }}"
+      summary: "{{ check_summary | default({}) }}"
+      failures: "{{ check_failures | default([]) }}"
+      host_stats: "{{ check_host_stats | default({}) }}"
+      results: "{{ check_results_by_host | default({}) }}"
+
+- name: Generate JSON report
+  ansible.builtin.copy:
+    content: "{{ expector_json_report | to_nice_json }}"
+    dest: "{{ expector_json_file }}"
+    mode: "0644"
+
+- name: Write stable latest JSON report
+  ansible.builtin.copy:
+    src: "{{ expector_json_file }}"
+    dest: "{{ expector_json_latest }}"
+    remote_src: true
+    mode: "0644"
+
+- name: Display JSON report path
+  ansible.builtin.debug:
+    msg: "JSON report written to {{ expector_json_file }} (latest: {{ expector_json_latest }})"
+
+- name: Generate errors HTML report
+  when: (check_summary.checks_failed | default(0) | int) > 0
+  ansible.builtin.template:
+    src: report-errors.html.j2
+    dest: "{{ expector_errors_file }}"
+    mode: "0644"
+
+- name: Write stable latest errors HTML report
+  when: (check_summary.checks_failed | default(0) | int) > 0
+  ansible.builtin.copy:
+    src: "{{ expector_errors_file }}"
+    dest: "{{ expector_errors_latest }}"
+    remote_src: true
+    mode: "0644"
+
+- name: Remove stale latest errors report when all checks passed
+  when: (check_summary.checks_failed | default(0) | int) == 0
+  ansible.builtin.file:
+    path: "{{ expector_errors_latest }}"
+    state: absent
+
+- name: Display errors report path
+  ansible.builtin.debug:
+    msg: "{{ _errors_report_msg }}"
+  vars:
+    _errors_report_msg: >-
+      {{
+        'Errors report written to ' ~ expector_errors_file ~ ' (latest: ' ~ expector_errors_latest ~ ')'
+        if ((check_summary.checks_failed | default(0) | int) > 0)
+        else 'Errors report skipped: all checks passed'
+      }}
+
+- name: Prune old report archives
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/prune_reports.yml"
