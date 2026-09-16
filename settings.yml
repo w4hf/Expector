@@ -2,7 +2,7 @@
 # Expector settings. Loaded by expector.yml on every play that needs them.
 # Extra vars (-e key=value) override anything in this file.
 #
-# Encrypt this file if it contains a real SMTP password:
+# Encrypt this file if it contains a real SMTP password or webhook token:
 #   ansible-vault encrypt settings.yml
 #   ansible-playbook expector.yml --ask-vault-pass
 #
@@ -62,13 +62,13 @@ notification_defaults:
     - failed
     - remediated
 
-# Shared transports. An email notification sets notificator: <name> to pick one.
-# type: smtp (email). Empty strings for username, password, and similar fields
-# are treated as unset (omit) by the mail module.
+# Shared transports. A notification sets notificator: <name> to pick one.
+# type: smtp (email) or webhook. Empty strings for username, password, token,
+# and similar fields are treated as unset (omit).
 notificators:
   - name: gmail                          # referenced by notifications[].notificator
     type: smtp                           # smtp
-    smtp_host: ""           # required to send (host is an alias)
+    smtp_host: <TO BE DEFINED>           # required to send (host is an alias)
     smtp_port: <TO BE DEFINED>                       # 25 unencrypted, 587 STARTTLS, 465 implicit TLS
     smtp_username: <TO BE DEFINED>  # SMTP auth user; empty = no auth
     smtp_password: <TO BE DEFINED>      # SMTP auth password; empty = no auth
@@ -78,9 +78,32 @@ notificators:
     from: <TO BE DEFINED>     # envelope sender; empty = module default (root)
     message_id_domain: ""                # domain for Message-ID; empty = module default
 
+  - name: ops-webhook                    # referenced by notifications[].notificator
+    type: webhook                        # tasks/notify/webhook.yml
+    url: <TO BE DEFINED>                 # required to send (endpoint is an alias)
+    method: POST                         # POST | PUT | PATCH
+    timeout: 30                          # seconds
+    validate_certs: true                 # TLS certificate verification
+    follow_redirects: safe               # safe | all | none | urllib2 | yes | no
+    use_proxy: true                      # honor http(s)_proxy
+    status_code:                         # HTTP statuses treated as success
+      - 200
+      - 201
+      - 202
+      - 204
+    token: ""                            # Bearer token; empty = no Authorization header
+    url_username: ""                     # HTTP basic user (username is an alias); empty = no basic auth
+    url_password: ""                     # HTTP basic password (password is an alias)
+    force_basic_auth: false              # send basic auth without waiting for 401
+    headers: {}                          # extra headers (dict); merged under notification headers
+    ca_path: ""                          # CA bundle path; empty = omit
+    client_cert: ""                      # client certificate path; empty = omit
+    client_key: ""                       # client key path; empty = omit
+
 # What to send. type must match tasks/notify/<type>.yml.
 # Email messages: errors_report (failure digest) and full_report (opt-in).
-# Each block has its own to / subject / body / notify_on / attachments.
+# Each email block has its own to / subject / body / notify_on / attachments.
+# Webhook POSTs the JSON report (or a custom body) to the notificator URL.
 notifications:
   - name: Operators email                # label in logs
     type: email                          # tasks/notify/email.yml
@@ -139,3 +162,23 @@ notifications:
       headers: []                        # override parent headers
       inline: []                         # override parent inline images
       message_id_domain: ""              # override notificator Message-ID domain
+
+  - name: Ops webhook                    # label in logs
+    type: webhook                        # tasks/notify/webhook.yml
+    notificator: ops-webhook             # name of an entry in notificators; optional if url is set here
+    enabled: true                        # per-system switch (default: notification_defaults.enabled)
+    notify_on:                           # when to POST (no errors_report / full_report split)
+      - failed
+      - remediated
+    url: ""                              # per-notification URL override; empty = notificator url
+    token: ""                            # override Bearer token; empty = notificator token
+    url_username: ""                     # override basic auth user; empty = notificator
+    url_password: ""                     # override basic auth password; empty = notificator
+    headers: {}                          # merged on top of notificator headers
+    body: ""                             # empty / json_report / report → generated JSON report
+                                         # path ending in .j2 → render that template
+                                         # any other string → literal body
+    body_format: json                    # json | raw | form-urlencoded
+    # Optional overrides (omit to use the notificator): method, timeout,
+    # validate_certs, follow_redirects, use_proxy, status_code,
+    # force_basic_auth, ca_path, client_cert, client_key.

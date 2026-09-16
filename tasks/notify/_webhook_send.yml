@@ -1,0 +1,131 @@
+---
+# POST one webhook. Expects _webhook_cfg, _webhook_url, current_notify.
+# Re-evaluates notify_on so a webhook that also defines email report
+# blocks is not sent on the wrong outcome.
+
+- name: Webhook | Evaluate trigger
+  ansible.builtin.set_fact:
+    _webhook_on_list: "{{ _on | map('trim') | map('lower') | select('ne', '') | list }}"
+  vars:
+    _raw: "{{ current_notify.notify_on | default(notification_defaults.notify_on | default('failed')) }}"
+    _on: "{{ (_raw if (_raw is sequence and _raw is not string) else [_raw]) }}"
+
+- name: Webhook | Match notify_on
+  ansible.builtin.set_fact:
+    _webhook_should_send: "{{ ('never' not in _webhook_on_list) and (('always' in _webhook_on_list) or ('failed' in _webhook_on_list and (_notify_failed | bool)) or ('passed' in _webhook_on_list and (_notify_passed | bool)) or ('remediated' in _webhook_on_list and (_notify_remediated | bool))) }}"
+
+- name: Webhook | Skip unmatched notify_on
+  when: not (_webhook_should_send | bool)
+  ansible.builtin.debug:
+    msg: "Webhook '{{ current_notify.name | default('webhook') }}' skipped (notify_on={{ _webhook_on_list | join(',') }})"
+
+- name: Webhook | Resolve body config
+  when: _webhook_should_send | bool
+  ansible.builtin.set_fact:
+    _webhook_body_cfg: "{{ _body_cfg }}"
+    _webhook_is_json_report: "{{ (_body_cfg | length == 0) or (_body_cfg in ['json_report', 'report']) }}"
+    _webhook_body_format: "{{ _format }}"
+  vars:
+    _body_cfg: "{{ current_notify.body | default('') | string | trim }}"
+    _nf: "{{ current_notify.body_format | default('') | string | trim | lower }}"
+    _cf: "{{ _webhook_cfg.body_format | default('') | string | trim | lower }}"
+    _format: "{{ _nf if (_nf | length > 0) else (_cf if (_cf | length > 0) else 'json') }}"
+
+- name: Webhook | Stat JSON report file
+  when:
+    - _webhook_should_send | bool
+    - _webhook_is_json_report | default(false) | bool
+    - expector_json_report is not defined
+    - (expector_json_file | default('') | string | trim | length) > 0
+  ansible.builtin.stat:
+    path: "{{ expector_json_file }}"
+  register: _webhook_json_stat
+
+- name: Webhook | Skip when JSON report is unavailable
+  when:
+    - _webhook_should_send | bool
+    - _webhook_is_json_report | default(false) | bool
+    - expector_json_report is not defined
+    - not (_webhook_json_stat.stat.exists | default(false) | bool)
+  ansible.builtin.debug:
+    msg: "Webhook '{{ current_notify.name | default('webhook') }}' skipped: JSON report is not available"
+
+- name: Webhook | Send
+  when:
+    - _webhook_should_send | bool
+    - (not (_webhook_is_json_report | default(false) | bool)) or (expector_json_report is defined) or (_webhook_json_stat.stat.exists | default(false) | bool)
+  block:
+    - name: Webhook | Resolve request options
+      ansible.builtin.set_fact:
+        _webhook_method: "{{ (current_notify.method | default(_webhook_cfg.method | default('POST'), true) | string | trim | upper) }}"
+        _webhook_timeout: "{{ current_notify.timeout | default(_webhook_cfg.timeout | default(30), true) | int }}"
+        _webhook_follow: "{{ current_notify.follow_redirects | default(_webhook_cfg.follow_redirects | default('safe'), true) }}"
+        _webhook_status_code: "{{ _nsc if (_nsc is sequence and _nsc is not string) else [_nsc] }}"
+        _webhook_ca_path: "{{ current_notify.ca_path | default(_webhook_cfg.ca_path | default(''), true) | string | trim }}"
+        _webhook_client_cert: "{{ current_notify.client_cert | default(_webhook_cfg.client_cert | default(''), true) | string | trim }}"
+        _webhook_client_key: "{{ current_notify.client_key | default(_webhook_cfg.client_key | default(''), true) | string | trim }}"
+        _webhook_validate_certs: "{{ _nv if ((_nv | string | trim | length) > 0) else (_cv if ((_cv | string | trim | length) > 0) else true) }}"
+        _webhook_use_proxy: "{{ _nup if ((_nup | string | trim | length) > 0) else (_cup if ((_cup | string | trim | length) > 0) else true) }}"
+        _webhook_force_basic: "{{ _nfb if ((_nfb | string | trim | length) > 0) else (_cfb if ((_cfb | string | trim | length) > 0) else false) }}"
+      vars:
+        _nsc: "{{ current_notify.status_code | default(_webhook_cfg.status_code | default([200, 201, 202, 204]), true) }}"
+        _nv: "{{ current_notify.validate_certs | default('') }}"
+        _cv: "{{ _webhook_cfg.validate_certs | default('') }}"
+        _nup: "{{ current_notify.use_proxy | default('') }}"
+        _cup: "{{ _webhook_cfg.use_proxy | default('') }}"
+        _nfb: "{{ current_notify.force_basic_auth | default('') }}"
+        _cfb: "{{ _webhook_cfg.force_basic_auth | default('') }}"
+
+    - name: Webhook | POST
+      ansible.builtin.uri:
+        url: "{{ _webhook_url }}"
+        method: "{{ _webhook_method }}"
+        timeout: "{{ _webhook_timeout | int }}"
+        validate_certs: "{{ _webhook_validate_certs | bool }}"
+        follow_redirects: "{{ _webhook_follow }}"
+        use_proxy: "{{ _webhook_use_proxy | bool }}"
+        status_code: "{{ _webhook_status_code }}"
+        headers: "{{ _headers if (_headers | length > 0) else omit }}"
+        body: "{{ _body }}"
+        body_format: "{{ _webhook_body_format }}"
+        url_username: "{{ _username if (_username | length > 0) else omit }}"
+        url_password: "{{ _password if (_password | length > 0) else omit }}"
+        force_basic_auth: "{{ _webhook_force_basic | bool }}"
+        ca_path: "{{ _webhook_ca_path if (_webhook_ca_path | length > 0) else omit }}"
+        client_cert: "{{ _webhook_client_cert if (_webhook_client_cert | length > 0) else omit }}"
+        client_key: "{{ _webhook_client_key if (_webhook_client_key | length > 0) else omit }}"
+        return_content: false
+      vars:
+        _nu: "{{ current_notify.url_username | default(current_notify.username | default('')) | string | trim }}"
+        _cu: "{{ _webhook_cfg.url_username | default(_webhook_cfg.username | default('')) | string | trim }}"
+        _username: "{{ _nu if (_nu | length > 0) else _cu }}"
+        _np: "{{ current_notify.url_password | default(current_notify.password | default('')) | string }}"
+        _cp: "{{ _webhook_cfg.url_password | default(_webhook_cfg.password | default('')) | string }}"
+        _password: "{{ _np if (_np | length > 0) else _cp }}"
+        _ntok: "{{ current_notify.token | default('') | string | trim }}"
+        _ctok: "{{ _webhook_cfg.token | default('') | string | trim }}"
+        _token: "{{ _ntok if (_ntok | length > 0) else _ctok }}"
+        _nh: "{{ current_notify.headers | default({}) }}"
+        _ch: "{{ _webhook_cfg.headers | default({}) }}"
+        _base_headers: "{{ (_ch if _ch is mapping else {}) | combine(_nh if _nh is mapping else {}) }}"
+        _has_ct: "{{ 'content-type' in (_base_headers.keys() | map('lower') | list) }}"
+        _ct_header: "{{ {'Content-Type': 'application/json'} if ((_webhook_is_json_report | bool) and (_webhook_body_format == 'raw') and (not (_has_ct | bool))) else {} }}"
+        _with_ct: "{{ _base_headers | combine(_ct_header) }}"
+        _has_auth: "{{ 'authorization' in (_with_ct.keys() | map('lower') | list) }}"
+        _bearer: "{{ {'Authorization': 'Bearer ' ~ _token} if ((_token | length > 0) and (not (_has_auth | bool))) else {} }}"
+        _headers: "{{ _with_ct | combine(_bearer) }}"
+        _body_path: "{{ _webhook_body_cfg if (_webhook_body_cfg.startswith('/') or _webhook_body_cfg.startswith(playbook_dir)) else (playbook_dir ~ '/' ~ _webhook_body_cfg) }}"
+        _custom_body: "{{ lookup('template', _body_path) if (_webhook_body_cfg.endswith('.j2')) else _webhook_body_cfg }}"
+        _body: "{{ (expector_json_report | to_json if (expector_json_report is defined) else lookup('file', expector_json_file)) if (_webhook_is_json_report | bool) else _custom_body }}"
+      no_log: false
+      delegate_to: localhost
+      register: _webhook_resp
+
+    - name: Webhook | Confirm send
+      ansible.builtin.debug:
+        msg: "Sent webhook '{{ current_notify.name | default('webhook') }}' {{ _webhook_method }} {{ _webhook_url }} (status: {{ _webhook_resp.status | default('unknown') }})"
+
+  rescue:
+    - name: Webhook | Capture send failure
+      ansible.builtin.debug:
+        msg: "Webhook '{{ current_notify.name | default('webhook') }}' failed to send. Check URL and authentication in settings.yml (secrets are not logged)."

@@ -1,0 +1,39 @@
+---
+# Notification type: webhook
+# Transport (url, auth, TLS) comes from the named notificator and/or
+# current_notify. Default body is the generated JSON report.
+
+- name: Webhook | Resolve notificator
+  ansible.builtin.set_fact:
+    _webhook_notificator_name: "{{ current_notify.notificator | default('') | string | trim }}"
+    _webhook_matches: "{{ notificators | default([]) | selectattr('name', 'defined') | selectattr('name', 'equalto', current_notify.notificator | default('')) | list }}"
+
+- name: Webhook | Select transport
+  ansible.builtin.set_fact:
+    _webhook_cfg: "{{ _webhook_matches[0] if (_webhook_matches | length > 0) else {} }}"
+    _webhook_url: "{{ _url }}"
+    _webhook_ready: "{{ (_notificator_ok | bool) and (_url | length > 0) }}"
+  vars:
+    _notificator_ok: "{{ (_webhook_notificator_name | length == 0) or (_webhook_matches | length > 0) }}"
+    _notify_url: "{{ current_notify.url | default(current_notify.endpoint | default('')) | string | trim }}"
+    _cfg_url: "{{ (_webhook_matches[0]['url'] | default(_webhook_matches[0]['endpoint'] | default('')) | string | trim) if (_webhook_matches | length > 0) else '' }}"
+    _url: "{{ _notify_url if (_notify_url | length > 0) else _cfg_url }}"
+
+- name: Webhook | Skip when notificator is missing
+  when:
+    - _webhook_notificator_name | length > 0
+    - (_webhook_matches | default([]) | length) == 0
+  ansible.builtin.debug:
+    msg: "Webhook notification '{{ current_notify.name | default('webhook') }}' skipped: notificator '{{ _webhook_notificator_name }}' not found in notificators"
+
+- name: Webhook | Skip when URL is missing
+  when:
+    - (_webhook_notificator_name | length == 0) or ((_webhook_matches | default([]) | length) > 0)
+    - not (_webhook_ready | bool)
+  ansible.builtin.debug:
+    msg: "Webhook notification '{{ current_notify.name | default('webhook') }}' skipped: no url (set url on the notification or the webhook notificator)"
+
+- name: Webhook | Send
+  when: _webhook_ready | bool
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/tasks/notify/_webhook_send.yml"
