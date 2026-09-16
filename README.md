@@ -5,7 +5,7 @@ Modular expected-state checker based on Ansible:
 2. Compares actual host state to what you declared
 3. Optionally remediates failures
 4. Generates HTML and JSON reports
-5. Send email with full reports and/or errors-only
+5. Send email and/or webhook notifications with reports
 
 Users can add their own checks (See [Add a check type](#add-a-check-type)) and their own notification systems (See [Add a notification type](#add-a-notification-type) ). 
 
@@ -39,7 +39,7 @@ Available checks are :
 
 - Ansible (ansible-core 2.14+; developed against 2.21)
 - SSH to hosts in `inventory`; Python 3 on the controller (`localhost` is `ansible_connection=local`)
-- `community.general` — required only for email
+- `community.general` — required only for email (`ansible.builtin.uri` is used for webhooks; no extra collection)
 
 ```bash
 ansible-galaxy collection install -r requirements.yml -p collections
@@ -53,7 +53,7 @@ Work from the project root. You need Ansible (ansible-core 2.14+), Python 3 on t
 
 ### 1. Install collections
 
-Email notifications need `community.general`. Install it next to the playbook and point Ansible at that path:
+Email notifications need `community.general`. Webhook notifications use `ansible.builtin.uri` (no extra collection). Install the collection next to the playbook and point Ansible at that path:
 
 ```bash
 ansible-galaxy collection install -r requirements.yml -p collections
@@ -65,7 +65,7 @@ Add this under `[defaults]` in `ansible.cfg` if it is not already there:
 collections_path = collections
 ```
 
-Skip this step if you will only write reports and never send mail (`expector_notify: false` or `--skip-tags notify`).
+Skip this step if you will only write reports or only use webhook notifications (`expector_notify: false`, `--skip-tags notify`, or no email notificator).
 
 ### 2. Create an inventory
 
@@ -85,7 +85,7 @@ Confirm SSH works: `ansible all -m ping`.
 
 ### 3. Edit settings
 
-`settings.yml` is the runner config (paths, report names, history, email). Extra vars (`-e`) override it for one run.
+`settings.yml` is the runner config (paths, report names, history, notifications). Extra vars (`-e`) override it for one run.
 
 At minimum:
 
@@ -96,10 +96,10 @@ At minimum:
 | How many archives to keep | `expector_report_keep` (default `10`; `all` or `-1` keeps everything) |
 | Force or disable all fixes | `expector_remediate`: `""` = per-check, `true` / `false` = override |
 
-Email is optional. Either:
+Notifications are optional. Either:
 
 - Set `expector_notify: false`, or run with `--skip-tags notify`, **or**
-- Fill `notificators` (`smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_secure`, `from`) and each message’s `to`. Encrypt a real password: `ansible-vault encrypt settings.yml`.
+- Fill `notificators` and `notifications`. Email needs `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_secure`, `from`, and each message’s `to`. Webhook needs `url` (and `token` / basic auth / `headers` if the endpoint requires them). Encrypt a real SMTP password or webhook token: `ansible-vault encrypt settings.yml`.
 
 To use another settings file: `-e settings_file=/path/to/other-settings.yml`.
 
@@ -119,7 +119,7 @@ Another checklist: `-e checklist_file=/path/to/other-checklist.yml`.
 ansible-playbook expector.yml
 ```
 
-First run without mail:
+First run without notifications:
 
 ```bash
 ansible-playbook expector.yml --skip-tags notify
@@ -169,7 +169,7 @@ Extra vars override `settings.yml` for that run.
 | `expector_report_keep` | Timestamped runs to keep (`all` / `-1` = unlimited) |
 | `expector_notify=false` | Skip every notification |
 
-Encrypt `settings.yml` if it contains a real SMTP password: `ansible-vault encrypt settings.yml`, then `--ask-vault-pass`.
+Encrypt `settings.yml` if it contains a real SMTP password or webhook token: `ansible-vault encrypt settings.yml`, then `--ask-vault-pass`.
 
 ## Settings (`settings.yml`)
 
@@ -224,7 +224,7 @@ JSON (every run):
 | `generator` | `"expector"` |
 | `generated_at` | ISO-8601 |
 | `summary` | `hosts_checked`, `hosts_unreachable`, `checks_total`, `checks_passed`, `checks_failed` |
-| `failures` | `{host, check_name, check_error, error_flag}` for checks that did not pass |
+| `failures` | `{host, check_name, check_type, check_error, error_flag}` for checks that did not pass |
 | `host_stats` | Per-host `{passed, failed, total, unreachable}` |
 | `results` | Per-host list of `check_report` dicts |
 
@@ -234,16 +234,21 @@ Unreachable ping targets skip every checklist item. They appear once as UNREACHA
 
 ## Notifications
 
-Configured in `settings.yml`. Run after reports; cannot fail checks or reports. Skip with `--skip-tags notify` or `expector_notify: false`. Empty SMTP username/password/from and similar fields are `omit`. The send task uses `no_log: true`; a failed send is a debug line and the play continues.
+Configured in `settings.yml`. Run after reports; cannot fail checks or reports. Skip with `--skip-tags notify` or `expector_notify: false`. Empty username/password/token/from and similar fields are `omit`. The send task uses `no_log: true`; a failed send is a debug line and the play continues.
 
 ### `notificators`
 
-Shared transports. An email notification sets `notificator: <name>`.
+Shared transports. A notification sets `notificator: <name>`.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Referenced by `notificator` |
-| `type` | `smtp` | Email uses SMTP |
+| `type` | required | `smtp` (email) or `webhook` |
+
+#### SMTP (`type: smtp`)
+
+| Key | Default | Meaning |
+|---|---|---|
 | `smtp_host` | required to send | `host` accepted as alias |
 | `smtp_port` | `587` | `25` unencrypted, `587` STARTTLS, `465` implicit TLS |
 | `smtp_username` / `smtp_password` | unset | Auth |
@@ -253,6 +258,23 @@ Shared transports. An email notification sets `notificator: <name>`.
 | `from` | unset (module default `root`) | Envelope sender (`sender` alias) |
 | `message_id_domain` | unset | `Message-ID` domain |
 
+#### Webhook (`type: webhook`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `url` | required to send | Endpoint (`endpoint` accepted as alias) |
+| `method` | `POST` | `POST` · `PUT` · `PATCH` |
+| `timeout` | `30` | Seconds |
+| `validate_certs` | `true` | TLS certificate verification |
+| `follow_redirects` | `safe` | Passed to `ansible.builtin.uri` |
+| `use_proxy` | `true` | Honor `http(s)_proxy` |
+| `status_code` | `[200, 201, 202, 204]` | HTTP statuses treated as success |
+| `token` | unset | Bearer token; sets `Authorization: Bearer …` unless that header is already present |
+| `url_username` / `url_password` | unset | HTTP basic auth (`username` / `password` aliases) |
+| `force_basic_auth` | `false` | Send basic auth without waiting for 401 |
+| `headers` | `{}` | Extra headers (dict) |
+| `ca_path` / `client_cert` / `client_key` | unset | TLS client/CA files |
+
 ### `notifications`
 
 `type` must match `tasks/notify/<type>.yml`.
@@ -260,13 +282,13 @@ Shared transports. An email notification sets `notificator: <name>`.
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Label in logs |
-| `type` | required | Task file stem |
+| `type` | required | Task file stem (`email`, `webhook`, …) |
 | `enabled` | `notification_defaults.enabled` | Per-system switch |
-| `notificator` | required for `email` | Name of a notificator |
-| `charset` | `utf-8` | Shared unless a message overrides |
-| `headers` | `[]` | `Header=value` strings |
-| `inline` | `[]` | `{path, cid, mime_type}` |
-| `attach` | `[]` | Extra files on both messages |
+| `notificator` | required for `email`; for `webhook` required unless `url` is set on the notification | Name of a notificator |
+| `charset` | `utf-8` | Email: shared unless a message overrides |
+| `headers` | email: `[]` · webhook: `{}` | Email: `Header=value` strings. Webhook: dict merged on top of the notificator |
+| `inline` | `[]` | Email: `{path, cid, mime_type}` |
+| `attach` | `[]` | Email: extra files on both messages |
 
 `notify_on` (string or list): `failed` (any check failed), `passed` (all passed), `remediated` (any remediation attempted), `always`, `never`.
 
@@ -295,6 +317,32 @@ Each block has its own `to` / `subject` / `body` / `notify_on` / attachments.
 | `attach_report` | errors: `false` · full: `true` | Attach full HTML report |
 | `attach_errors_report` | errors: `true` · full: `false` | Attach errors HTML when it exists |
 | `attach` / `charset` / `headers` / `inline` / `message_id_domain` | parent or type default | Per-message overrides |
+
+### `webhook`
+
+`ansible.builtin.uri` from localhost (no extra collection). One POST (or `method`) per notification. There is no `errors_report` / `full_report` split; `notify_on` on the notification decides when to send.
+
+Notification-level `url`, auth, headers, timeout, and TLS keys override the named notificator when set (empty string = unset / inherit). `notificator` may be omitted when `url` is set on the notification.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `notify_on` | `notification_defaults.notify_on` | When to POST |
+| `url` | notificator `url` | Endpoint override (`endpoint` alias) |
+| `method` | notificator / `POST` | `POST` · `PUT` · `PATCH` |
+| `timeout` | notificator / `30` | Seconds |
+| `validate_certs` | notificator / `true` | TLS certificate verification |
+| `follow_redirects` | notificator / `safe` | Passed to `uri` |
+| `use_proxy` | notificator / `true` | Honor `http(s)_proxy` |
+| `status_code` | notificator / `[200, 201, 202, 204]` | HTTP statuses treated as success |
+| `token` | notificator | Bearer token; sets `Authorization: Bearer …` unless that header is already present |
+| `url_username` / `url_password` | notificator | HTTP basic auth (`username` / `password` aliases) |
+| `force_basic_auth` | notificator / `false` | Send basic auth without waiting for 401 |
+| `headers` | `{}` | Dict merged on top of notificator headers |
+| `body` | empty | Empty, `json_report`, or `report` → generated JSON report (`generator`, `generated_at`, `summary`, `failures`, `host_stats`, `results`). A `.j2` path is rendered. Any other string is sent literally. |
+| `body_format` | `json` | `json` · `raw` · `form-urlencoded`. For the JSON report, `json` sends a JSON object and sets `Content-Type: application/json` (encoded once). `raw` sends the same JSON string; `Content-Type: application/json` is added if you did not set it. |
+| `ca_path` / `client_cert` / `client_key` | notificator | TLS client/CA files |
+
+The JSON report is read from the in-memory `expector_json_report` fact, or from `expector_json_file` if that fact is missing. If neither exists, the webhook is skipped.
 
 ### Add a notification type
 
