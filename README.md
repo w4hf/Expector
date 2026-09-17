@@ -224,7 +224,7 @@ JSON (every run):
 | `generator` | `"expector"` |
 | `generated_at` | ISO-8601 |
 | `summary` | `hosts_checked`, `hosts_unreachable`, `checks_total`, `checks_passed`, `checks_failed` |
-| `failures` | `{host, check_name, check_type, check_error, error_flag}` for checks that did not pass |
+| `failures` | `{host, check_name, check_type, check_error, error_flag, check_details}` for checks that did not pass. `check_details` is the failed `details` row from `results` (`result: fail`), as a dict. |
 | `host_stats` | Per-host `{passed, failed, total, unreachable}` |
 | `results` | Per-host list of `check_report` dicts |
 

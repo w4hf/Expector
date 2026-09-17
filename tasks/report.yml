@@ -32,7 +32,7 @@
             {%- set ns.passed = ns.passed + 1 -%}
           {%- else -%}
             {%- set ns.failed = ns.failed + 1 -%}
-            {%- set ns.failures = ns.failures + [{'host': host, 'check_name': c.check_name, 'check_type': c.check_type | default('unknown'), 'check_error': c.check_error | default(''), 'error_flag': c.error_flag | default('')}] -%}
+            {%- set ns.failures = ns.failures + [{'host': host, 'check_name': c.check_name, 'check_type': c.check_type | default('unknown'), 'check_error': c.check_error | default(''), 'error_flag': c.error_flag | default(''), 'check_details': ((c.details | default([]) | selectattr('result', 'equalto', 'fail') | list | first) | default({}))}] -%}
           {%- endif -%}
         {%- endfor -%}
         {%- if host_unreach.flag -%}
